@@ -29,13 +29,13 @@ public sealed class ModEntry : Mod
     private Dictionary<string, int> beforeCatch = new();
     private readonly List<object> catches = new();
     // 附加模块：只在按键/命令时启动；不移动、不寻路（寻路交给 travel 等其它模块）。
-    private const SButton StartKey = SButton.F7;
-    private const SButton StopKey = SButton.F8;
+    internal ModConfig Config = new();
     private string triggeredBy = "";
 
     public override void Entry(IModHelper helper)
     {
         Instance = this;
+        Config = helper.ReadConfig<ModConfig>();  // 首次运行会在本 Mod 目录生成 config.json
         runtime = Path.Combine(helper.DirectoryPath, "runtime");
         Directory.CreateDirectory(runtime);
         new Harmony(ModManifest.UniqueID).Patch(AccessTools.Method(typeof(BobberBar), nameof(BobberBar.update)),
@@ -45,8 +45,8 @@ public sealed class ModEntry : Mod
         helper.Events.Input.ButtonPressed += (_, e) =>
         {
             if (!Context.IsWorldReady) return;
-            if (e.Button == StartKey) { StartFromKey(); return; }
-            if (e.Button != StopKey) return;
+            if (e.Button == Config.StartKey) { StartFromKey(); return; }
+            if (e.Button != Config.StopKey) return;
             pausedDate = DateKey();
             if (Active) Finish("stopped", "manual_f8");
             else { state = "stopped"; reason = "manual_f8"; WriteStatus(); }
@@ -55,7 +55,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("fish_skill_start", "在当前站位开始钓鱼（等同按 F7）", (_, _) => StartFromKey());
         helper.ConsoleCommands.Add("fish_skill_stop", "停止独立钓鱼技能（等同按 F8）", (_, _) => Finish("stopped", "console_stop"));
         WriteStatus();
-        Monitor.Log($"独立钓鱼附加模块就绪：站到岸边朝水面按 {StartKey} 钓一段，{StopKey} 停止；本模块不移动、不寻路。", LogLevel.Info);
+        Monitor.Log($"独立钓鱼附加模块就绪：站到岸边朝水面按 {Config.StartKey} 钓一段（默认 {Config.MaxCasts} 竿 / {Config.MaxSeconds} 秒），{Config.StopKey} 停止；参数可在本目录 config.json 改。本模块不移动、不寻路。", LogLevel.Info);
     }
 
     private string DateKey() => $"{Game1.player.UniqueMultiplayerID}/{Game1.year}/{Game1.currentSeason}/{Game1.dayOfMonth}";
@@ -128,7 +128,7 @@ public sealed class ModEntry : Mod
     {
         if (!Context.IsWorldReady) return;
         if (Active) { Monitor.Log("钓鱼已在进行中，按 F8 可以停止。", LogLevel.Info); return; }
-        var limits = new Limits();
+        var limits = FromConfig();
         triggeredBy = "key";
         string? why;
         try { why = Start("key-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"), limits); }
@@ -143,6 +143,26 @@ public sealed class ModEntry : Mod
         Log("start_rejected", new { why });
         WriteStatus();
         Monitor.Log("现在不能钓鱼：" + Explain(why), LogLevel.Warn);
+    }
+
+    /// <summary>把 config.json 的数值夹到允许范围，避免手改参数后按键直接被拒。</summary>
+    private Limits FromConfig() => new()
+    {
+        MaxCasts = Math.Clamp(Config.MaxCasts, 1, 100),
+        TargetFish = Math.Clamp(Config.TargetFish, 0, 100),
+        MaxSeconds = Math.Clamp(Config.MaxSeconds, 10, 1800),
+        MinEnergy = Math.Clamp(Config.MinEnergy, 15, 270),
+        StopAt = Math.Clamp(Config.StopAt / 100 * 100, 600, 2300),
+        Facing = -1
+    };
+
+    /// <summary>一行中文摘要，给 status.json 的 summary 用。</summary>
+    private string Summary(bool ready)
+    {
+        if (!ready) return "还没进存档";
+        if (!Active)
+            return string.IsNullOrEmpty(reason) ? $"空闲：站到岸边按 {Config.StartKey}" : $"空闲（上次结束：{reason}）";
+        return $"第 {casts} 竿 · 鱼 {fish} · 其他 {trash} · {phase}";
     }
 
     private static string Explain(string why) => why switch
@@ -364,8 +384,20 @@ public sealed class ModEntry : Mod
         var path = Path.Combine(runtime, "status.json");
         var ready = Context.IsWorldReady;
         var text = JsonSerializer.Serialize(new {
-            version = 1, capabilities = new[] { "start", "stop_run", "key" },
-            startKey = StartKey.ToString(), stopKey = StopKey.ToString(),
+            version = 1, capabilities = new[] { "start", "stop_run", "key", "config" },
+            startKey = Config.StartKey.ToString(), stopKey = Config.StopKey.ToString(),
+            config = new
+            {
+                startKey = Config.StartKey.ToString(), stopKey = Config.StopKey.ToString(),
+                maxCasts = Config.MaxCasts, maxSeconds = Config.MaxSeconds,
+                minEnergy = Config.MinEnergy, stopAt = Config.StopAt
+            },
+            emptySlots = ready ? EmptySlots() : (int?)null,
+            nextStop = ready ? FishingPolicy.EndReason(casts, fish, failures,
+                Active ? (DateTime.UtcNow - started).TotalSeconds : 0, Game1.timeOfDay,
+                Game1.player.Stamina, EmptySlots(), Active ? limits : FromConfig()) : null,
+            summary = Summary(ready),
+            reasonText = string.IsNullOrEmpty(reason) ? "" : Explain(reason),
             mode = "game", observedUtc = DateTime.UtcNow, state, active = Active, phase, runId, reason, triggeredBy,
             casts, fish, trash, failures, catches, ack, worldReady = ready,
             location = ready ? Game1.currentLocation.NameOrUniqueName : null,
@@ -445,6 +477,18 @@ public sealed class ModEntry : Mod
     {
         try { File.Delete(path); }
         catch (Exception) { }
+    }
+
+    /// <summary>本 Mod 目录 config.json：键位与默认预算；改完重进存档/重启游戏生效。</summary>
+    public sealed class ModConfig
+    {
+        public SButton StartKey { get; set; } = SButton.F7;
+        public SButton StopKey { get; set; } = SButton.F8;
+        public int MaxCasts { get; set; } = 20;
+        public int TargetFish { get; set; }
+        public int MaxSeconds { get; set; } = 1200;
+        public int MinEnergy { get; set; } = 30;
+        public int StopAt { get; set; } = 2200;
     }
 
     private sealed class Command

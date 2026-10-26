@@ -22,7 +22,24 @@ description: 附加模块：在星露谷里按键触发一段钓鱼（抛竿、�
 
 ## 执行
 
-默认一段 = 5 竿 / 300 秒，命中任一即收工：竿数用完、目标鱼数达到、连续 3 竿无收获、同岸同朝向连 2 次空竿、体力不足、到 22:00、超时、换图/换竿/玩家接管、按 F8。
+默认一段 = **20 竿 / 1200 秒**（可在 `config.json` 调），命中任一即收工：竿数用完、目标鱼数达到、连续 3 竿无收获、同岸同朝向连 2 次空竿、体力不足、到 22:00、超时、换图/换竿/玩家接管、按 F8。
+
+## 配置（可选）
+
+Mod 目录下的 `config.json`（首次启动自动生成，改完重进存档/重启游戏生效）：
+
+```json
+{
+  "StartKey": "F7",
+  "StopKey": "F8",
+  "MaxCasts": 20,
+  "TargetFish": 0,
+  "MaxSeconds": 1200,
+  "MinEnergy": 30,
+  "StopAt": 2200
+}
+```
+数值会被夹到安全范围（竿数 1~100、时长 10~1800 秒、体力 15~270、就寝 600~2300 且必须是整点 HH00）。
 
 ```powershell
 python scripts/fish.py doctor                 # 只查文件，不启动游戏
@@ -39,7 +56,7 @@ python scripts/fish.py stop
 
 收获走游戏原生 `doneHoldingFish` 入包，并按 `itemId|quality` 做**背包差分**核对；鱼（`Category == -4` 或带 `counts_as_fish_catch`）与垃圾分别计数。
 
-产物：`Mods/StandaloneFishingSkill/runtime/status.json`（现场状态：`state/phase/casts/fish/trash/reason/menu/startKey`）、`runtime/history.jsonl`（每竿一行，含 `runId/cast/location/tile/facing/result/...`）。`status.reason` 是唯一可信的停止原因，`active=false` 不等于“钓到了”。
+产物：`Mods/StandaloneFishingSkill/runtime/status.json`（现场状态：`state/phase/casts/fish/trash/reason`、`summary` 一行中文摘要、`reasonText` 中文原因、`emptySlots`、`nextStop` 预测下一竿会被什么条件拦住、`config` 当前生效预算）、`runtime/history.jsonl`（每竿一行，含 `runId/cast/location/tile/facing/result/...`）。`status.reason` 是唯一可信的停止原因，`active=false` 不等于“钓到了”。
 
 ## 安装与更新
 

@@ -1,8 +1,8 @@
 {
   "Name": "Standalone Fishing Skill",
   "Author": "stardew-farm-bot",
-  "Version": "0.3.1",
-  "Description": "独立钓鱼附加模块：站到岸边按 F7 在当前站位钓一段（不移动、不寻路），F8 停止；默认关闭。",
+  "Version": "0.4.0",
+  "Description": "独立钓鱼附加模块：站到岸边按 F7 在当前站位钓一段（不移动、不寻路），F8 停止；键位与预算可在 config.json 调。",
   "UniqueID": "StardewFarmBot.StandaloneFishingSkill",
   "EntryDll": "StandaloneFishingSkill.dll",
   "MinimumApiVersion": "4.5.2",
