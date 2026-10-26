@@ -279,19 +279,39 @@ CLEAR_TOOLS = {
     
     "石头": "Pickaxe",
     "岩石": "Pickaxe",
-    # 镰刀 mod 不支持（只认锄头/水壶/斧头/镐/种子），杂草也用斧头清
-    "杂草": "Axe",
-    "Grass": "Axe",
-    "草": "Axe",
+    # 杂草只能用镰刀割（斧头/镐都砍不掉）；mod 已支持镰刀
+    "杂草": "Scythe",
+    "Grass": "Scythe",
+    "草": "Scythe",
+    "杂草丛": "Scythe",
 }
+
+
+SCYTHE_IDS = ("47", "53")          # 47 普通镰刀 / 53 金镰刀
+
+
+def is_scythe_item(it):
+    """镰刀在游戏里是 MeleeWeapon，观察数据里 tool=MeleeWeapon，只有名字/ID 能认。"""
+    name = (it.get("name") or "")
+    item_id = str(it.get("id") or it.get("itemId") or "")
+    if "镰刀" in name or "scythe" in name.lower():
+        return True
+    if "scythe" in (it.get("tool") or "").lower():
+        return True
+    return any(item_id == x or item_id.endswith(")" + x) for x in SCYTHE_IDS)
 
 
 def tool_slot(snap, tool_name):
     for it in snap.get("inventory") or []:
         if (it.get("tool") or "") == tool_name or (it.get("name") or "") == tool_name:
             return it
-    # 镰刀在物品里记的是 MeleeWeapon，用名字兜底
-    alias = {"Scythe": "镰刀", "Axe": "斧头", "Pickaxe": "十字镐", "Hoe": "锄头", "WateringCan": "喷壶"}
+    if tool_name == "Scythe":
+        for it in snap.get("inventory") or []:
+            if is_scythe_item(it):
+                return it
+        return None
+    # 其余工具用名字兜底（不同语言/别名）
+    alias = {"Axe": "斧头", "Pickaxe": "十字镐", "Hoe": "锄头", "WateringCan": "喷壶"}
     want = alias.get(tool_name, tool_name)
     for it in snap.get("inventory") or []:
         if (it.get("name") or "") == want:
@@ -742,8 +762,8 @@ class Farmer:
         self.last_seed_gain = []
         seeds_before = {i.get("slot"): i.get("count", 0) for i in seeds_in(snap)}
         # 树排最后：砍一棵要好几下，先把轻的清了
-        order = {"杂草": 0, "Grass": 0, "草": 0, "嫩枝": 1, "树枝": 1,
-                 "石头": 2, "岩石": 2}
+        order = {"杂草": 0, "Grass": 0, "草": 0, "杂草丛": 0,
+                 "嫩枝": 1, "树枝": 1, "石头": 2, "岩石": 2}
         pos = (snap.get("player") or {}).get("position") or {}
         px, py = pos.get("x", 0), pos.get("y", 0)
         cands = []
@@ -766,8 +786,8 @@ class Farmer:
                 break
             it = tool_slot(snap, tool)
             if not it:
-                self.log("  背包里没有 %s" % tool)
-                break
+                self.log("  背包里没有 %s（杂草只能镰刀割）" % tool)
+                continue
             mv = await self.do("走到 %s" % (e.get("tile"),), self.b.move(near=e["ref"]))
             if not self.dry and not mv:
                 continue

@@ -1,0 +1,51 @@
+git.exe : warning: in the working copy of 'D:\1\steamapps\common\Stardew Valley\_dev\agent-stardew-src\mods\AgentStarde
+w\GameActions.cs.bak-20261026173717', LF will be replaced by CRLF the next time Git touches it
+所在位置 行:6 字符: 1
++ & git diff --no-index --unified=3 $bak $ga 2>&1 | Out-File -FilePath  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: in the... Git touches it:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+diff --git a/mods/AgentStardew/GameActions.cs b/mods/AgentStardew/GameActions.cs
+index 15114b2..61f5659 100644
+--- a/mods/AgentStardew/GameActions.cs
++++ b/mods/AgentStardew/GameActions.cs
+
+@@ -135,6 +135,16 @@ public static class GameActions
+             player.Halt();
+         }
+     }
++
++        /// <summary>镰刀在游戏里是 MeleeWeapon（47 普通镰刀 / 53 金镰刀），不是普通 Tool。</summary>
++        private static bool IsScythe(Tool tool)
++        {
++            if (tool is not MeleeWeapon) return false;
++            var name = tool.GetType().Name ?? "";
++            if (name.Contains("Scythe", StringComparison.OrdinalIgnoreCase)) return true;
++            var id = tool.ItemId ?? "";
++            return id is "47" or "53" || id.EndsWith(")47", StringComparison.Ordinal) || id.EndsWith(")53", StringComparison.Ordinal);
++        }
+     private sealed class UseAction : IGameAction
+     {
+         private readonly Observations observations;
+@@ -166,9 +176,9 @@ public static class GameActions
+                 // 与游戏的物品放置入口一致，由游戏检查季节、物品并扣除数量。
+                 if (!Utility.tryToPlaceItem(target.Location, seeds, target.Tile.X * 64, target.Tile.Y * 64)) throw new ActionFault("INSUFFICIENT_RESOURCE", "当前种子不能种在这里，请检查季节和土地。");
+             }
+-            else if (selected is Tool tool && (tool is Hoe || tool is WateringCan || tool is Axe || tool is Pickaxe))
++            else if (selected is Tool tool && (tool is Hoe || tool is WateringCan || tool is Axe || tool is Pickaxe || IsScythe(tool)))
+             {
+-                operation = tool is Hoe ? "耕地" : tool is WateringCan ? "浇水" : "使用工具";
++                operation = tool is Hoe ? "耕地" : tool is WateringCan ? "浇水" : IsScythe(tool) ? "割草" : "使用工具";
+                 var refill = tool is WateringCan && target.Location.CanRefillWateringCanOnTile(target.Tile.X, target.Tile.Y);
+                 if (!refill && player.Stamina < 2) throw new ActionFault("INSUFFICIENT_RESOURCE", "体力不足。");
+                 if (tool is Hoe && (feature != null || target.Location.objects.ContainsKey(target.Tile.ToVector2()) || target.Location.doesTileHaveProperty(target.Tile.X, target.Tile.Y, "Diggable", "Back") == null)) throw new ActionFault("INVALID_ARGUMENT", "目标不是空置可耕地。");
+@@ -190,7 +200,7 @@ public static class GameActions
+                 player.toolPower.Value = 0;
+                 player.BeginUsingTool();
+             }
+-            else throw new ActionFault("UNSUPPORTED", "请选择锄头、浇水壶、斧头、镐或种子。");
++            else throw new ActionFault("UNSUPPORTED", "请选择锄头、浇水壶、斧头、镐、镰刀或种子。");
+         }
+         public object? Tick()
+         {
