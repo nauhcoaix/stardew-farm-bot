@@ -1,0 +1,6 @@
+mod/bin/
+mod/obj/
+tests/bin/
+tests/obj/
+runtime/
+__pycache__/
