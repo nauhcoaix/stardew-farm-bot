@@ -711,6 +711,20 @@ async def travel(b, f, snap, dest):
                     wps = body + [last]
                 else:
                     wps = [last]
+            # 只保留"离出口越来越近"的拐点：去掉来回抖动的部分
+            if len(wps) > 2:
+                mono = []
+                for w in wps:
+                    if not mono:
+                        mono.append(w)
+                        continue
+                    d_prev = abs(mono[-1][0] - last[0]) + abs(mono[-1][1] - last[1])
+                    d_now = abs(w[0] - last[0]) + abs(w[1] - last[1])
+                    if d_now <= d_prev:
+                        mono.append(w)
+                if mono and mono[-1] != last:
+                    mono.append(last)
+                wps = mono
             # 已经站在出口格上了：直接往外挪一格，别绕一大圈
             if me[0] is not None and (abs(me[0] - last[0]) + abs(me[1] - last[1])) <= 1:
                 log("  已经站在出口 %s 上，直接往外走" % (last,))
