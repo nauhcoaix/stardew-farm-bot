@@ -537,7 +537,12 @@ async def run_action(b, f, snap, act):
     a = (act.get("action") or "").lower()
     arg = act.get("arg") or {}
     if a == "harvest":
-        return await f.harvest(snap, limit=WORK_CHUNK)
+        snap = await f.harvest(snap, limit=WORK_CHUNK)
+        # 收完那块地还是翻好的，直接补种；不要再走一遍翻地
+        if f.last_harvest and sum(i.get("count", 0) for i in seeds_in(snap)) > 0:
+            log("  收完就地补种 %d 格（地还是翻好的，不用再挖）" % f.last_harvest)
+            snap = await f.plant(snap, limit=f.last_harvest)
+        return snap
     if a == "clear":
         plan = dict(PLAN or {})
         plan["clear_min_energy"] = int(arg.get("min_energy", plan.get("clear_min_energy", 70)) or 70)

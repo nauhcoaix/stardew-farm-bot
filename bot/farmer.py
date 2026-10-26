@@ -827,8 +827,10 @@ class Farmer:
         px, py = pos.get("x", 0), pos.get("y", 0)
         cands = []
         for e in ents(snap):
-            if (not e.get("diggable") or e.get("tilled") or not in_plot(e.get("tile"))
-                    or not self.history.allowed(snap, "till", e)):
+            # 已翻过的地（比如刚收完作物）不要重复挖：它本来就能直接种
+            if not e.get("diggable") or e.get("tilled") or e.get("crop") or not in_plot(e.get("tile")):
+                continue
+            if not self.history.allowed(snap, "till", e):
                 continue
             t = e.get("tile") or {}
             cands.append((abs(t.get("x", 0) - px) + abs(t.get("y", 0) - py), e))
