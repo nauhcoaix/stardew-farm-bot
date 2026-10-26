@@ -108,6 +108,24 @@ python bot\farm-doctor.py
 **现在两边已经拆开**，微信那边不含任何农场代码。
 想让报告重新进微信，自己做个小脚本读 `outbox/*.json` 就行，
 格式就上面那个。
+## 校验文件一致性
+
+仓库里带 `CHECKSUMS.sha256`（每个文件的 sha256，按 LF 归一化算，Windows/Linux 结果一样）。
+
+```powershell
+# 校验（不一致会列出哪个文件、返回码 1）
+python scripts/checksums.py --verify
+
+# 改了文件之后重新生成
+python scripts/checksums.py --write
+```
+
+Linux/macOS 上也能直接用标准工具（注意必须没开 autocrlf，否则换行会不一致）：
+
+```bash
+sha256sum -c CHECKSUMS.sha256
+```
+
 ## 许可
 
 MIT，见 LICENSE。游戏本体资源与 mod 版权归各自作者。
