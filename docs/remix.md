@@ -1,0 +1,300 @@
+# 【SDV1.6 × AI】NagiBridge二改版
+
+> ⚠️ 本仓库是 **NagiBridge 的二次修改版**（SDV 1.6 × AI 整合，经原作授权开源分享），**并非原作官方版本**。原作版权归原作者 **里奈**（GitHub [anqinou-art](https://github.com/anqinou-art)），本版基于其源码与授权修改，改动与 AI 整合由恒 · Deepseek 完成。
+>
+> 🐙 **本版作者**：[GitHub @pendel001](https://github.com/pendel001)　　**本版仓库**：[pendel001/NagiBridge-Remix](https://github.com/pendel001/NagiBridge-Remix)　（mod 游戏内显示名：**【SDV1.6 × AI】NagiBridge二改版**）
+>
+> 📄 **协议**：本仓库采用 [PolyForm Noncommercial License 1.0.0](LICENSE)（源码可用 · 非商用 · 允许署名二改）——二改/转发请把**协议（或它的链接）与署名**一起带上。
+
+NagiBridge 是一个 **[星露谷](https://www.stardewvalley.net/)（Stardew Valley）SMAPI mod**，底层是一个控制游戏 + 游戏内 AI 聊天的工具集。它在游戏中放一个可被外部 AI（如 Claude Code）操控的 farmhand，让 AI 像真实玩家一样**住在你的农场里、跟你一起玩**。
+
+---
+
+## 🎯 这是什么
+
+一句话：NagiBridge 把**一个能被外部 AI 操控的农场工（farmhand）**放进你的星露谷联机房 —— AI 用它**像真人一样**跟你同场玩：走路、说话、种地、下矿、过节。
+
+- 🗣️ **会说话** — 在**游戏原生的聊天框**里跟你对话（按 `T`），会报天气/运势/农场新闻，也会接你的话
+- 🎮 **能干活** — 浇水/下矿/养动物/逛店/送礼/过节…… 都能做（详见 [scripts/TOOL_INVENTORY.md](scripts/TOOL_INVENTORY.md)）
+- 🌙 **有记忆** — 每次开服务器都会留**会话日志**（`scripts/sessions/session_*.jsonl`，可导出 `.md`）；把它交给你的 AI 前端，就能接着上次往下聊
+
+它由两部分组成：
+
+| 部分 | 是什么 | 干什么 |
+|---|---|---|
+| **游戏内 mod**（C#） | 装进游戏的插件 | 游戏里说话、控制角色、起 HTTP 接口（`:7842` host / `:7843` farmhand）|
+| **MCP 服务器**（Python） | 单独跑的小程序 | 让外部的 AI（如 Claude Code）操控游戏、并保存会话记录（`:8000`）|
+
+⚠️ **两部分都要**：只装 mod 不会自己冒出 AI（原作者那套"游戏内直连大模型"的面板本版不走）；AI 是**外部前端 + MCP 服务器**那条路 —— 见 [4. 进阶](#4-进阶让-ai-跟你一起玩mcp-连接)。
+
+---
+
+## 🗺️ 目录
+
+| 你是谁 | 看哪节 |
+|---|---|
+| 🎮 只想在游戏里跟 AI 聊天 | [1. 快速上手](#1-快速上手玩家) · [2. 安装](#2-安装玩家) · [3. 游戏里聊天](#3-游戏里聊天) |
+| 🤖 想让 AI 真的进游戏、跟你同场一起玩 / 被外部 AI 控制 | [4. 进阶：MCP 连接](#4-进阶让-ai-跟你一起玩mcp-连接) · [5. 连不上速查](#5-连不上疑难杂症速查) |
+| 🛠️ 想改代码 / 看接口 | [6. 开发者](#6-开发者) |
+
+---
+
+## 1. 快速上手（玩家 · 30 秒）
+
+1. **装好** mod（见 [2. 安装](#2-安装玩家)）
+2. 用 **SMAPI 启动游戏**（进 `Stardew Valley` 文件夹双击 `StardewModdingAPI.exe`）
+3. 起 **MCP 服务器**（见 [4. 进阶](#4-进阶让-ai-跟你一起玩mcp-连接)），AI 会以 **farmhand** 的身份进你的世界
+4. 聊天就用**游戏原生的聊天框**：按 **`T`** 打字发送 —— AI 说的话也会出现在同一个聊天框里
+
+> **第一次装的玩家注意**：本版**不用**原作者那套「按 `` ` `` 打开的独立聊天面板 / API Mode / Channel Mode」
+> —— 聊天回到**游戏原生 T 聊天**，AI 由外部 MCP 那条路驱动。细节看 [3. 游戏里聊天](#3-游戏里聊天)。
+
+---
+
+## 2. 安装（玩家）
+
+> ### 📥 [**Download the latest release →**](https://github.com/pendel001/NagiBridge-Remix/releases/latest)
+>
+> Grab the latest zip (currently `NagiBridge 0.9.0.zip`) from the link above — it already contains the compiled `NagiBridge.dll`. **You do not need to build anything.**
+
+1. Install [SMAPI](https://smapi.io/)
+2. Download the latest zip from [**Releases**](https://github.com/pendel001/NagiBridge-Remix/releases/latest) and unzip it
+3. Move the unzipped `NagiBridge` folder into your `Stardew Valley/Mods/` folder
+   (so you end up with `Stardew Valley/Mods/NagiBridge/NagiBridge.dll` + `manifest.json`)
+4. Launch the game through SMAPI
+
+First launch auto-generates `config.json`. The mod is built for **Stardew Valley 1.6+ / SMAPI 4.0+** and the same `.dll` works on **Windows, macOS and Linux**.
+
+> 🪟 **窗口尺寸**：`config.json` 的 `WindowWidth` / `WindowHeight` **默认 `0` = 不干预**（窗口大小完全交给游戏自己决定，不动你的设置）。
+> 想固定成某个尺寸就**两个都**填正数，例如 `"WindowWidth": 1600, "WindowHeight": 900`（**只填一个不生效**）。
+> ⚠️ 0.9.0 及更早版本默认写的是 `1280`×`720`，会把这套尺寸**硬设到别人机器上**（大屏偏小、小屏可能顶边）；
+> 老 `config.json` 里那对值就是旧默认写进去的 —— 想恢复"不干预"就把它们改成 `0`。
+
+> **Cloning the source repo?** There is **no `.dll` in the source tree** — it ships only in [Releases](https://github.com/pendel001/NagiBridge-Remix/releases/latest). If you cloned/downloaded the code and SMAPI says it can't find `NagiBridge.dll`, download the release zip above, or build it yourself (see [6. 开发者](#6-开发者)).
+>
+> 🙏 原作者的 [NagiBridge](https://github.com/anqinou-art/NagiBridge)（**本版不是它**，见页首说明）。
+
+---
+
+## 3. 游戏里聊天
+
+**本版聊天走游戏原生的聊天框**（原作者的独立面板本版不走）：
+
+| 谁 | 怎么发 | 对方怎么看到 |
+|---|---|---|
+| 🧑 你（房主）| 按 **`T`** 打字发送（游戏原生聊天）| 你说的话会进 AI 的「MCP 状态条」——它下一回合就看得见；**你按 `Y` 发表情，它也看得到** |
+| 🤖 AI（farmhand）| 由 MCP 侧 `social send` 发（或 `/chat/push` 广播）| 会**以 farmhand 的身份出现在左上角那个原生聊天框**里 —— 跟你自己发的一样 |
+
+> 🗣️ 一句话：**按 `T` 说话就行**，不用记别的键。
+>
+> ⚠️ **原作者那套「按 `` ` `` 打开的独立聊天面板 + API Mode / Channel Mode + `chat_history.json`」本版不走**：
+> 代码还在（按 `` ` `` 可能还能弹出旧面板），但它的定位与设置**我们不再维护**，别用它聊天。
+> `config.json` 里那几个老键（`Mode` / `ApiKey` / `Model` / `SystemPrompt` / `MaxHistoryMessages`）同理，留着但不影响使用。
+>
+> 🤖 **想让 AI 真的进游戏操作**（走位/种地/下矿/节日）→ 见 [4. 进阶：MCP 连接](#4-进阶让-ai-跟你一起玩mcp-连接)。
+
+---
+
+## 4. 进阶：让 AI 跟你一起玩（MCP 连接）
+
+> **这是给"想让 AI 真的进游戏、跟你同场一起玩"的人**（比如用 Claude Code 当 AI 的大脑）。核心就一句：
+> **先起 `nagi_mcp_server.py`，再在客户端里填 `http://<IP>:8000/mcp`，传输选 Streamable HTTP。**
+>
+> 60% 的「连不上」都是这 3 个坑：**① URL 少写了 `/mcp`；② 客户端选了 SSE 而不是 Streamable HTTP；③ Windows 防火墙没放行 8000 端口。**
+> 连不上时直接看 [5. 连不上速查](#5-连不上疑难杂症速查)。
+
+### 4.1 前置（一次搞定）
+
+| 需要什么 | 说明 |
+|---|---|
+| 已装 NagiBridge 游戏 mod | 见 [2. 安装](#2-安装玩家)，先让游戏能跑 |
+| Python 3.10+ | 跑 MCP 服务器用 |
+| 装 `mcp<2` + `requests` 库 | `pip install "mcp<2" requests`（`mcp` 是服务器本体，`requests` 是 Python 侧调游戏 API 用的。⚠️ **必须钉 `mcp<2`**：MCP SDK 2.x 把 `FastMCP` 改名成 `MCPServer`，服务器代码用的是 v1 API，装成 2.x 会在启动时报 `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`。截图降采样可选装 `pillow`）<br>其实**双击 `启动NagiBridge.bat` 会自动装**（而且会钉对版本），这一行列出来只是让你知道它装了什么 |
+| 游戏**已启动**且进档 | MCP 服务器要读游戏状态，游戏没开会显示「游戏进程未就绪」 |
+| （手机连的话）同一 Wi-Fi | 手机和电脑要在**同一个局域网**，手机不能在外面用流量连 |
+
+### 4.2 启动 MCP 服务器
+
+**最省事：双击仓库根目录的 `启动NagiBridge.bat`** —— 它先自检（Python / 依赖库 / SMAPI / mod 部署 / 局域网IP，
+缺的尽量自动装，并会打印探测到的「游戏目录」供你核对），全绿了再起服务器。
+
+> ⚠️ 这个 `.bat` **必须待在仓库里**（跟 `scripts\` 文件夹同级）：它靠**自己的位置**去找 `scripts\`，
+> 单独拷到桌面会报 `scripts\launcher_check.py NOT FOUND`。想在桌面点，请用**快捷方式**
+> （右键 → 发送到 → 桌面快捷方式）——快捷方式可以随便摆。
+> 游戏装在别的盘？启动器会自动探测；探测不到就设 `NAGI_GAME_DIRS` 环境变量指路（多个用 `;` 分隔）。
+
+不想用它、或者想自己控制，就在仓库根目录开一个终端：
+
+```bash
+# Windows（重要：必须有 PYTHONIOENCODING=utf-8，否则 emoji/中文刷屏）
+set PYTHONIOENCODING=utf-8
+python scripts/nagi_mcp_server.py
+```
+
+> 没有 `PYTHONIOENCODING` 会报 `UnicodeEncodeError: 'gbk' codec...`（Windows 老毛病）。
+> 想改端口就用 `NAGI_MCP_PORT=9000 python scripts/nagi_mcp_server.py`。
+
+**启动成功**你会看到类似：
+
+```
+NagiBridge MCP Server | HTTP: http://0.0.0.0:8000
+📱 手机/Claude Code 连（同一网络）: http://<你的局域网IP>:8000/mcp
+  16 tools registered | schema 估算 ~xxxx 字符
+✅ 角色映射: AI(xxx)=7843 | host(xxx)=7842
+```
+
+- `0.0.0.0` 表示**本机 + 局域网都能连**（默认就是它）。
+- `<你的局域网IP>` 是你电脑的**局域网 IP**（手机要填这个，看 4.4）——它会**自动跳过 VMware/VirtualBox 这类虚拟网卡**，跟启动器自检印的那个是同一个。
+- 默认控制 **AI 角色(7843)**；想控制房主(7842) 就用 `NAGI_URL=http://localhost:7842` 启动。
+
+### 4.3 从手机连（最常见「java 报错」的出处）
+
+**必须做对这 4 件事，缺一不可：**
+
+**① URL 要带 `/mcp` 路径**
+```
+❌ http://<你的局域网IP>:8000          → 404
+✅ http://<你的局域网IP>:8000/mcp     → 正确
+```
+网址就填启动日志里那行「📱 手机/Claude Code 连」给的全称，**别自己凭 IP 拼**。
+
+**② 传输方式选「Streamable HTTP」，不是 SSE**
+很多手机 App 默认是老式 **SSE**（会去请求 `/sse`，而 NagiBridge 的 `/sse` 已删除、返回 404）。看到 `404` 或 `java...` 报错先检查这个。**NagiBridge 只认 Streamable HTTP。**
+
+**③ 手机和电脑同一局域网 + 电脑防火墙放行 8000**
+- 手机连着和电脑**同一个路由器**的 Wi-Fi。
+- 如果电脑上有安全软件/防火墙拦住 8000，手机连不上。手动放行：
+
+```powershell
+# 用管理员 PowerShell 放行 TCP 8000（只对"专用/专用网络"开，安全）
+New-NetFirewallRule -DisplayName "NagiBridge MCP 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Private
+```
+> 开了这条就能连；不想要就在 `-Profile` 里去掉，或连完删掉（`Remove-NetFirewallRule -DisplayName "NagiBridge MCP 8000"`）。
+
+**④ 客户端要支持 Streamable HTTP**
+手机 App 得是能连「远程 MCP」的（支持 streamable-http 的），常见的有 Cline、天工/各类支持自定义 MCP 的 App。纯 JSON-RPC demo、或不认识 streamable-http 的客户端会握手失败报错。
+
+### 4.4 手机/客户端填法（小抄）
+
+```
+地址:  http://<你的局域网IP>:8000/mcp        （= 你电脑的局域网IP/端口/mcp）
+传输:  Streamable HTTP（不是 SSE）
+协议:  MCP（默认即可）
+端口: 8000
+```
+
+### 4.5 本机 Claude Code（桌面端）连法
+
+仓库自带 `.mcp.json`，Claude Code 开机就能连：
+```json
+{ "url": "http://localhost:8000/mcp" }
+```
+本机用 `localhost` 就行；**手机/别机**才用 `<你的局域网IP>`。
+
+### 4.6 你们的故事存在哪（AI 的记忆，可带到别的前端）
+
+一起玩的对话、剧情、小新闻会**全程落盘**在仓库 `scripts/sessions/` 目录，文件名带**每次启动的时间戳**：
+
+| 文件 | 是什么 | 何时有 |
+|---|---|---|
+| `scripts/sessions/session_<时间戳>.jsonl` | 实时全量记录，**每行一条**（谁说了什么、发生了什么） | ✅ 玩的过程中一直在写 |
+| `scripts/sessions/session_<时间戳>.md` | 可读的复盘/记忆归档（按说话人 + 时间整理） | 🔧 先 `settings(ops="session_set", kw={"setting":"export_format","value":"markdown"})`，再 `settings(ops="session_export")` |
+
+**想把记忆带到别的 AI 前端 / 新会话接着聊**：找到这次启动时间戳的 `session_*.jsonl`，把内容喂给那个前端（贴进它的上下文），AI 就能接着记住你们一起经历的日子。想要一份给人看的版本，就按上表那两步导一份 `.md`。
+
+> ⚠️ **2026-10-01 澄清（恒问「会话导出有必要吗，服务器应该是实时生成日志的吧」——问得对）**：
+> `session_*.jsonl` **本来就是全量、每写一条就落盘**，所以「导全量」这件事**不需要导出**；
+> 那份 `.md` 是**内存里最近 `max_turns`（默认 50）条**的子集，唯一增量是 markdown 排版。
+> 默认 `export_format=jsonl` 时导出**一个字节都不写**（旧版还会回一句「已导出 N 条」—— **假回执，已修**）。
+> 另：`auto_export` / `include_npc` 两个旋钮**从来没接上**（代码里没有读取点），已删。
+
+> ⚠️ 别跟同一个目录里的 `session_log.jsonl` 搞混——那是**工具调用日志**（记每次调用返回多少字节，给开发/回归分析用的），不是聊天记录。
+>
+> 📁 **2026-09-12 起，这两类都从 `scripts/` 根目录挪进了 `scripts/sessions/`** —— 因为攒了两百多个带时间戳的档案，根目录被堆脏了。
+
+---
+
+## 5. 连不上？疑难杂症速查
+
+### 5.1 先在**同一台电脑**上验证（强烈建议先做这步）
+
+如果电脑上都连不上，手机肯定也连不上。用 curl 测：
+
+```bash
+# ✅ 正常 = HTTP/1.1 200 + text/event-stream + serverInfo: NagiBridge
+curl -i -X POST http://localhost:8000/mcp \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
+```
+
+| 你看到 | 含义 / 怎么办 |
+|---|---|
+| `200` + `serverInfo: NagiBridge` | ✅ 服务器正常 → 问题在客户端，看 5.2 |
+| `406`（GET 没带 Accept 头） | 正常，换上面的 POST 测 |
+| `404` | 端口或路径不对：确认 URL 是 `http://localhost:8000/mcp`（**带 `/mcp`**） |
+| `Connection refused` / 超时 | 服务器没起，或游戏没开，或端口被占（换端口） |
+
+> 仓库里的 `python scripts/mcp_test_client.py` 目前在这台机器上会因 `mcp` 库版本 bug 报 `'function' object has no attribute 'total_seconds'`——那是**客户端库**问题，不是服务器问题，不影响手机/Claude Code 连接。
+>
+> ⚠️ **不要**用 `pip install -U mcp` 去"修"它：`-U` 会把手上的 v1 升成 **mcp 2.x**，而 2.x 移除了 `mcp.server.fastmcp`（改名 `MCPServer`），**MCP 服务器会当场启动失败**（`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`）。动任何依赖之前先确认仍满足 `mcp<2`：`pip install "mcp<2"`。
+
+### 5.2 常见报错速查
+
+| 报错 | 原因 | 解决 |
+|---|---|---|
+| `java... 报错 / 404` | URL 少了 `/mcp`，或客户端用了 SSE | 补上 `/mcp`；传输改成 Streamable HTTP |
+| `Connection refused` | 服务器没起 / 游戏没开 / 端口被占 | 确认 4.2 启动日志；换 `NAGI_MCP_PORT` |
+| 手机 `timeout` | 不同网 / 防火墙拦 / DHCP 客户端隔离 | 确认同一 Wi-Fi；放行 8000；关掉路由器「AP隔离」 |
+| 能连但报「没有工具 / 工具不全」 | 服务器是**域工具模式**（恒开，只留 **16** 个：13 域 + `intent`/`screenshot`/`help`） | 确认用本仓库 `.mcp.json`（域模式恒开，无 `--full` 回退） |
+| 改了 tools/引导**不生效** | `calendar_data.py` 等是启动时 import 的 | **重启 MCP 服务器** |
+| 桌面 Claude Code 连不上 | `.mcp.json` 用 `localhost`，只适用于同机 | 同机 `localhost:8000/mcp` 即可；跨机才用 IP |
+
+---
+
+## 6. 开发者
+
+### Build from source
+
+Requires the [.NET SDK](https://dotnet.microsoft.com/download) (6.0+) and a local Stardew Valley install.
+
+```bash
+dotnet build -c Release
+```
+
+The project uses [`Pathoschild.Stardew.ModBuildConfig`](https://github.com/Pathoschild/SMAPI/blob/develop/docs/technical/mod-package.md), which **auto-detects your game folder** (Steam / GOG / Xbox on any OS) and copies the built mod straight into `Stardew Valley/Mods/NagiBridge/`. No paths to edit. If auto-detection fails, set a `GamePath` property or `GAME_PATH` environment variable pointing at your install.
+
+### HTTP API
+
+Game starts an HTTP server on `localhost:7842` (host) / `7843` (farmhand)；MCP 服务器在 `:8000`（`/mcp`）。
+
+> ⚠️ **写 `localhost`，别写 `127.0.0.1`** —— mod 的 HttpListener 前缀就是 `localhost`，`127.0.0.1` 一律被拒（回非 JSON）。
+> 角色由"**谁先开游戏**"决定：先开的那个拿 7842，另一个拿 7843 ⇒ 换人开局会**翻转**，动角色前用 `check(what="role")` 核一下。
+
+Full endpoint list: see [AGENTS.md](AGENTS.md)（全量端点/逐文件职责/核心范式：`python PROJECT_PANORAMA.py`）
+
+### Automation Scripts
+
+Python scripts for common farm tasks. Require `requests` package.
+
+```bash
+pip install requests
+```
+
+| Script | Usage |
+|--------|-------|
+| `farm_row.py` | `python farm_row.py 64 18 10 --seed "Melon Seeds" --rows 3` |
+| `water_crops.py` | `python water_crops.py --port 7843` |
+| `harvest.py` | `python harvest.py 60 17 70 20 --sell` |
+| `mine_run.py` | `python mine_run.py --mode rush --start 1 --target 20`（冲层）／`--mode farm --ore Gold`（刷矿）|
+| `chop_trees.py` | `python chop_trees.py --count 10` |
+| `clear_area.py` | `python clear_area.py 60 15 70 25` |
+| `pet_walk.py` | `python pet_walk.py` |
+| `machine_loader.py` | `python machine_loader.py "Ancient Fruit" --type "Keg"` |
+| `rock_run.py` | `python rock_run.py --radius 14`（默认只扫不敲，加 `--dig` 才敲）|
+| `berry_run.py` / `spot_run.py` | `python berry_run.py` / `python spot_run.py` |
+| `fish_run.py` | `python fish_run.py --location Beach --max-casts 5` |
+
+⚠️ **这些脚本默认打 `--port 7842`（房主角色）** —— 想让 AI 角色（farmhand / 7843）去做，**必须显式 `--port 7843`**
+（MCP 侧调用时服务器会自动注入，不用你管；只有手工跑才要注意）。
+Windows 上加 `PYTHONIOENCODING=utf-8`（否则 emoji/中文会炸 GBK）。

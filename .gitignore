@@ -1,0 +1,46 @@
+# 游戏本体 / 二进制（绝对不能传）
+Content/
+Mods/
+smapi-internal/
+*.dll
+*.exe
+*.pdb
+*.so
+StardewModdingAPI*
+
+# 存档与备份
+Saves/
+save-backups/
+_dsh_tmp/
+
+# 运行产物
+logs/
+__pycache__/
+*.pyc
+obj/
+bin/
+pylibs/
+node_modules/
+.venv/
+
+# 调试数据（含聊天内容 / 农场状态）
+*.png
+*.jpg
+*.log
+snap*.json
+status.json
+decisions.jsonl
+farm-state.json
+_svc-*.txt
+svc-*.txt
+*.bak-*
+*.lock
+inbox/
+outbox/
+backups/
+
+# 密钥（必须）
+planner-config.json
+config.json
+.env
+*.key
