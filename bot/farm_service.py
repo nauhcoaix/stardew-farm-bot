@@ -598,6 +598,44 @@ async def _ensure_game_active(f, snap, tries=25):
     return snap
 
 
+async def _step_outward(f, snap, tile, tries=2):
+    """站到出口格后再往外挪一格（有时 warp 格在边界外，必须多走一步）。"""
+    tx, ty = int(tile[0]), int(tile[1])
+    center = _map_center(snap) or (0, 0)
+    sx = 0 if tx == center[0] else (1 if tx > center[0] else -1)
+    sy = 0 if ty == center[1] else (1 if ty > center[1] else -1)
+    if sx == 0 and sy == 0:
+        sy = -1
+    # 只沿"离地图中心更远"的那个轴走，避免斜着乱撞
+    if abs(tx - center[0]) >= abs(ty - center[1]):
+        sy = 0
+    else:
+        sx = 0
+    for i in range(1, tries + 1):
+        ox, oy = tx + sx * i, ty + sy * i
+        log("  再往地图外走一格 (%d,%d)" % (ox, oy))
+        try:
+            walked = await f.do("走出边界 (%d,%d)" % (ox, oy), f.b.move(x=ox, y=oy))
+            snap = (walked or {}).get("snapshot") or await f.snap(16)
+        except Exception as exc:  # noqa: BLE001
+            log("    move 失败：%s" % exc)
+            snap = await f.snap(16)
+        if snap:
+            return snap
+    # move 不行就用方向键硬走
+    try:
+        import farmer as _fr
+        vk = {(-1, 0): 0x25, (1, 0): 0x27, (0, -1): 0x26, (0, 1): 0x28}.get((sx, sy))
+        if vk:
+            log("  用方向键往外走")
+            _fr.send_key(vk, 2)
+            await asyncio.sleep(0.8)
+            snap = await f.snap(16)
+    except Exception as exc:  # noqa: BLE001
+        log("   方向键失败：%s" % exc)
+    return snap
+
+
 async def travel(b, f, snap, dest):
     """区域间移动：每次只看眼前，能看见哪个出口就往哪跳，直到到达目标区域。"""
     dest = places.norm(dest)
@@ -637,7 +675,7 @@ async def travel(b, f, snap, dest):
         for name in cand_names:
             if name == here or (came_from and name == came_from and len(cand_names) > 1):
                 continue
-            sub = places.route(name, target)
+            sub = places.route_learned(name, target)
             if sub is None:
                 continue
             cost = 1 + len(sub) + (3 if name == came_from else 0)
@@ -660,6 +698,23 @@ async def travel(b, f, snap, dest):
             last = tuple(learned["leave"][:2])
             if not wps or wps[-1] != last:
                 wps.append(last)
+            # 拐点朝向：从"离我最近的那头"走起，终点固定是出口
+            pos0 = (snap.get("player") or {}).get("position") or {}
+            me = (pos0.get("x"), pos0.get("y"))
+            if me[0] is not None and len(wps) > 1:
+                body = [w for w in wps if w != last]
+                if body:
+                    d0 = abs(body[0][0] - me[0]) + abs(body[0][1] - me[1])
+                    d1 = abs(body[-1][0] - me[0]) + abs(body[-1][1] - me[1])
+                    if d0 > d1:
+                        body.reverse()
+                    wps = body + [last]
+                else:
+                    wps = [last]
+            # 已经站在出口格上了：直接往外挪一格，别绕一大圈
+            if me[0] is not None and (abs(me[0] - last[0]) + abs(me[1] - last[1])) <= 1:
+                log("  已经站在出口 %s 上，直接往外走" % (last,))
+                wps = [last]
             # 只保留"越走越靠近终点"的拐点，避免绕回头
             log("  按录到的路线走：%d 个拐点，终点 (%d,%d)" % (len(wps), last[0], last[1]))
             for idx, (wx, wy) in enumerate(wps):
@@ -678,6 +733,14 @@ async def travel(b, f, snap, dest):
                 log("  到 %s 了" % hop)
                 came_from = here
                 continue
+            # 站到出口格了但没切图：再往地图外走一格试试
+            if places.norm(snap.get("location")) == here:
+                snap = await _step_outward(f, snap, learned["leave"])
+                snap = await _snap_settled(f, snap, want_exits=True)
+                if places.norm(snap.get("location")) == hop:
+                    log("  到 %s 了" % hop)
+                    came_from = here
+                    continue
             log("  没切到 %s（现在 %s），换别的办法" % (hop, places.norm(snap.get("location"))))
         if places.exit_to(snap, hop) is None:
             # 这个出口在视野外（实测 BusStop 去小镇的出口在往东 30 多格外）
@@ -962,7 +1025,7 @@ def action_ready(snap, act, plan, history=None):
         dest = places.norm(arg.get("to") or arg.get("dest"))
         if not dest or dest == here:
             return False
-        return places.route(here, dest, extra_edges={here: set(places.exits_of(snap))}) is not None
+        return places.route_learned(here, dest) is not None
     if snap.get("location") != "Farm":
         return False
     if a == "harvest":

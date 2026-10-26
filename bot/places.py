@@ -175,3 +175,45 @@ def learned_hop(src, dst):
                 except Exception:
                     return None
     return None
+
+def learned_edges():
+    """录到的连接图：{src: {dst: {...}}} -> {src: set(dst)}"""
+    data = learned_all()
+    return {norm(a): {norm(b) for b in (m or {})} for a, m in data.items()}
+
+
+def route_learned(src, dst, prefer_learned=True):
+    """只走录到的连接；没有录制数据时退回静态 EDGES。"""
+    src, dst = norm(src), norm(dst)
+    if not src or not dst:
+        return None
+    dst2 = INDOOR.get(dst, dst)
+    src2 = src if src in EDGES else INDOOR.get(src, src)
+    if src2 == dst2:
+        return []
+    graph = learned_edges()
+    use = graph if (prefer_learned and graph) else {k: set(v) for k, v in EDGES.items()}
+    if src2 not in use and src2 in EDGES:
+        use = dict(use)
+        use[src2] = set(EDGES.get(src2) or [])
+    seen = {src2: None}
+    q = deque([src2])
+    while q:
+        cur = q.popleft()
+        for nxt in sorted(use.get(cur) or []):
+            if nxt in seen:
+                continue
+            seen[nxt] = cur
+            if nxt == dst2:
+                path = [nxt]
+                c = cur
+                while c is not None:
+                    path.append(c)
+                    c = seen[c]
+                path.reverse()
+                return path[1:]
+            q.append(nxt)
+    # 录到的图走不通，再用静态表试一次
+    if use is not EDGES and prefer_learned:
+        return route(src2, dst2)
+    return None
