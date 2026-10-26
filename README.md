@@ -54,6 +54,9 @@ notepad bot\planner-config.json      # 填 api_key
 | `WECHAT_AUTO` | 微信机器人目录（给 `start-wechat.bat` 用，可选） |
 | `FARM_DATA` | 运行数据（日志/收发箱/备份）放哪，默认就是本目录 |
 | `FARM_RESET_HOURS` | 连续跑多久自动清一次动作记录（默认 8，防 OUTPUT_LIMIT） |
+| `FARM_CLEAR_MODE` | 清障决策：`auto`（代码按缺口算）或 `ask`（让模型挑候选名单） |
+| `FARM_CLEAR_ZONE` | 默认清障范围：`cluster`（只清开垦区）`path` `all` |
+| `FARM_CLEAR_BUDGET` | 每天最多清几格障碍（默认 20） |
 
 ### 代码放别处，数据留在游戏目录
 
@@ -94,6 +97,11 @@ python bot\farm-doctor.py
 - `farm_service.py` 不加 `--loop` 只跑一轮就退出（退出码 0，看着像"莫名其妙没了"）
 - SMAPI 控制台窗口标题里也有 `Stardew Valley`，按标题找窗口会认错 → 必须按窗口类名排除 `console`/`terminal`
 - `SetWindowPos` 拉窗口前要先 `ShowWindow(SW_RESTORE)`，最大化状态下直接拉不动
+
+## 清障策略
+
+**缺地才清，而且只在开垦区清。** 细节见 [`docs/clear-policy.md`](docs/clear-policy.md)：
+缺口驱动、区域闸门（none/cluster/path/all）、每日预算、把农场地图摘要喂给模型。
 
 ## 和微信机器人解耦
 

@@ -69,6 +69,7 @@ WORK_INTERVAL_MIN = 25
 sys.path.insert(0, DEV)
 from farm_client import Bridge  # noqa: E402
 import planner  # noqa: E402
+import farm_layout  # noqa: E402
 from farmer import (Farmer, ents, water_targets, harvestable, empty_tilled,  # noqa: E402
                     water_can, seeds_in)
 
@@ -76,6 +77,14 @@ from farmer import (Farmer, ents, water_targets, harvestable, empty_tilled,  # n
 DECISIONS_FILE = os.path.join(DEV, "decisions.jsonl")
 LAST_DECISION_REPORT = 0
 DAY_STATS = {"day": None, "watered": 0, "harvested": 0, "planted": 0}
+# 清障策略（可用环境变量调）
+CLEAR_MODE = (os.environ.get("FARM_CLEAR_MODE") or "auto").lower()      # auto | ask
+CLEAR_ZONE_DEFAULT = (os.environ.get("FARM_CLEAR_ZONE") or "cluster").lower()
+try:
+    CLEAR_BUDGET = int(os.environ.get("FARM_CLEAR_BUDGET") or 20)        # 每天最多清几格
+except Exception:
+    CLEAR_BUDGET = 20
+DAY_CLEAR = {"day": None, "cleared": 0, "in": 0, "out": 0, "skipped": 0}
 LAST_ACTION = ""
 PLAN = {}
 PLAN_DAY = None
@@ -316,9 +325,13 @@ async def refresh_plan(b, f, snap):
         money = md.get("money")
     except Exception:
         pass
-    text = ("第%s天 %s %s点，体力 %s/%s，钱 %s，种子 %s，作物 %s 株，背包 %s/36，木材 %s"
+    try:
+        digest_text = farm_layout.describe_digest(farm_layout.farm_digest(snap))
+    except Exception as _e:  # noqa: BLE001
+        digest_text = "（地图摘要算不出来：%s）" % _e
+    text = ("第%s天 %s %s点，体力 %s/%s，钱 %s，种子 %s，作物 %s 株，背包 %s/36，木材 %s\n\n%s"
             % (d.get("day"), d.get("season"), snap.get("time"), p.get("energy"), p.get("maxEnergy"),
-               money, seeds, crops, used, wood))
+               money, seeds, crops, used, wood, digest_text))
     log("问模型：%s" % text)
     return await asyncio.to_thread(planner.ask, text)
 
@@ -541,12 +554,88 @@ async def run_action(b, f, snap, act):
     return snap
 
 
+async def auto_clear(b, f, snap, plan):
+    """按「缺口」决定要不要清、清哪几格。
+
+    缺口 = 想种的格数 - (已翻地空格 + 可耕地)
+    缺口 <= 0 -> 一个都不清（这是以前最大的浪费）
+    zone 由计划给（none/cluster/path/all），不给就用默认 cluster
+    每天有格数预算，超了就停
+    """
+    try:
+        digest = farm_layout.farm_digest(snap)
+    except Exception as e:  # noqa: BLE001
+        log("算地图摘要失败：%s" % e)
+        digest = {"free_slots": 0, "counts": {}}
+    c = digest.get("counts") or {}
+    available = int(digest.get("free_slots") or 0) + int(c.get("tillable") or 0)
+
+    _d = (snap.get("date") or {}).get("day")
+    if DAY_CLEAR.get("day") != _d:
+        DAY_CLEAR.update({"day": _d, "cleared": 0, "in": 0, "out": 0, "skipped": 0})
+    left = max(0, CLEAR_BUDGET - int(DAY_CLEAR.get("cleared") or 0))
+
+    target = plan.get("plant_target")
+    if target is None:
+        seeds = sum(i.get("count", 0) for i in snap.get("inventory") or [] if "种子" in (i.get("name") or ""))
+        target = seeds + int(plan.get("buy_qty") or 0)
+    try:
+        target = int(target)
+    except Exception:
+        target = 0
+    need = max(0, target - available)
+
+    zone = str(plan.get("clear_zone") or CLEAR_ZONE_DEFAULT).lower()
+    if zone not in ("none", "cluster", "path", "all"):
+        zone = CLEAR_ZONE_DEFAULT
+    if need <= 0:
+        zone = "none"
+    if left <= 0:
+        log("[清障] 今天的预算用完了（%d 格），不再清" % CLEAR_BUDGET)
+        return snap
+
+    log("[清障] zone=%s 目标=%d 可用=%d 缺口=%d 预算剩=%d 理由=%s" % (
+        zone, target, available, need, left, plan.get("clear_reason") or "-"))
+    if zone == "none":
+        return snap
+
+    min_energy = int(plan.get("clear_min_energy") or 70)
+    picks = None
+    if CLEAR_MODE == "ask" and need > 0:
+        try:
+            cands = farm_layout.clear_candidates(snap, zone=zone, need=need, max_n=min(8, left))
+            if cands:
+                lines = ["想种 %d 格，能直接种 %d 格，缺 %d 格。候选：" % (target, available, need)]
+                for x in cands:
+                    lines.append("%d. %s 在 (%d,%d)：%s，体力 %d" % (
+                        x["i"], x["name"], x["tile"]["x"], x["tile"]["y"], x["why"], x["cost"]))
+                picked = await asyncio.to_thread(planner.pick_candidates, "\n".join(lines))
+                if picked and isinstance(picked.get("clear"), list):
+                    picks = picked["clear"]
+                    log("[清障] 模型挑了 %s（%s）" % (picks, picked.get("reason") or ""))
+        except Exception as e:  # noqa: BLE001
+            log("[清障] 选择题失败，退回自动：%s" % e)
+
+    snap = await f.clear_obstacles(snap, limit=min(8, left), min_energy=min_energy,
+                                   zone=zone, need=need, picks=picks)
+    DAY_CLEAR["cleared"] += int(f.last_cleared or 0)
+    DAY_CLEAR["in"] += int(getattr(f, "last_cleared_in", 0) or 0)
+    DAY_CLEAR["out"] += int(getattr(f, "last_cleared_out", 0) or 0)
+    if f.last_cleared:
+        log("[清障] 清了 %d 格（区内 %d / 区外 %d），今天累计 %d/%d" % (
+            f.last_cleared, getattr(f, "last_cleared_in", 0), getattr(f, "last_cleared_out", 0),
+            DAY_CLEAR["cleared"], CLEAR_BUDGET))
+    return snap
+
+
 async def rule_work(b, f, snap):
     """模型没回话时的老规则。"""
     snap = await f.clear_menu(snap)
     snap = await f.go_outside(snap)
     snap = await f.harvest(snap)
-    snap = await f.clear_obstacles(snap, limit=6, min_energy=70)
+    _seeds0 = sum(i.get("count", 0) for i in snap.get("inventory") or [] if "种子" in (i.get("name") or ""))
+    if _seeds0 > 0:
+        snap = await auto_clear(b, f, snap, {"plant_target": _seeds0})
     _seeds = seeds_in(snap)
     if _seeds:
         snap = await f.till(snap, limit=4)
@@ -837,7 +926,7 @@ async def run_once():
             snap = await f.go_outside(snap)
             snap = await f.harvest(snap)
             stats["harvested"] += f.last_harvest
-            snap = await f.clear_obstacles(snap, limit=int(PLAN.get("clear_limit") or 8), min_energy=int(PLAN.get("clear_min_energy") or 70))
+            snap = await auto_clear(b, f, snap, PLAN)
             _wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if (i.get("name") or "") == "木材")
             if PLAN.get("chop") and _wood < 100:
                 snap = await f.chop_trees(snap, want_wood=100, max_swings=12)
@@ -949,6 +1038,8 @@ async def run_once():
             DAY_STATS["watered"] += f.last_watered
             DAY_STATS["harvested"] += f.last_harvest
             DAY_STATS["planted"] += f.last_planted
+            if DAY_CLEAR.get("day") == _d and (DAY_CLEAR.get("cleared") or 0) > 0 and _d:
+                pass  # 明细在 [清障] 行里已经记了，这里不重复
             if f.last_harvest or f.last_cleared or f.last_till or f.last_planted or f.last_watered:
                 log("这轮：收 %d，清 %d，翻 %d，种 %d，浇 %d，种子 %d" % (f.last_harvest, f.last_cleared, f.last_till, f.last_planted, f.last_watered, sum(s.get("count", 0) for s in seeds_in(snap))))
     finally:

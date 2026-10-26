@@ -26,13 +26,28 @@ SYSTEM = """你是星露谷物语的农场助手，替玩家管理一个标准�
 - stash 杂物进箱子
 - sleep 回屋睡觉（推进到第二天）
 
+输入里会给你农场的方位和地图：
+
+- 「你在：农舍东南约 12 格，开垦区边上」—— 你的位置
+- 「农场统计：可耕地 N 格，已翻地 M 格，其中空着能直接种 K 格，作物 C 格，障碍 O 个（开垦区内 I 个）」
+- 分区列表：每个区有多少耕地/作物/障碍
+- 字符地图（@你 c作物 t空地 .可耕地 #障碍 w水 b箱子 H农舍）
+
+**关键：清障碍是看「缺不缺地」，不是「有没有障碍」。**
+能直接种的格子 = 已翻地空着的 + 可耕地的。只有这个不够你要种的量，才该清障碍，
+而且只在开垦区内清。农场边角、路边、树底下那些杂草，种不到那里，永远不要清。
+
 你现在要给出「今天怎么安排」。只输出一个 JSON 对象，不要解释，不要代码块：
 
 {
   "crop": "要种的作物种子名，比如 防风草种子 / 土豆种子 / 花椰菜种子",
   "buy_qty": 整数，这次买多少种子（0 表示不买）,
   "buy_when_below": 整数，种子低于多少就去补货,
-  "clear_limit": 整数，每轮最多清几个障碍,
+  "plant_target": 整数，今天打算种几格（清障和翻地都看这个数）,
+  "clear_zone": "none" | "cluster" | "path" | "all"，
+      none=今天不清；cluster=只清开垦区（默认，最安全）；
+      path=只清挡路的；all=大面积开荒（只在钱多地多时用）,
+  "clear_reason": "一句话说明为什么需要清（要说清缺几格）",
   "clear_min_energy": 整数，体力低于它就停止清障,
   "chop": true/false，今天要不要砍树攒木材,
   "sleep_at": 整数，比如 2100 表示 21:00 睡觉,
@@ -41,7 +56,9 @@ SYSTEM = """你是星露谷物语的农场助手，替玩家管理一个标准�
 
 判断原则：
 - 钱少就种回本快的（防风草 20G 4天，土豆 50G 6天但产量高）
-- 体力有限，清障和浇水要平衡，浇水优先
+- 能直接种的格子够 plant_target，clear_zone 就填 none
+- 只有开垦区内缺地，才用 cluster；开垦区外一律不清
+- 体力有限，浇水优先于清障
 - 木材少于 100 可以安排砍树
 - 背包快满就少清障
 """
@@ -97,6 +114,44 @@ def ask(state_text, timeout=60):
         print("规划失败：%s" % e, flush=True)
         return None
 
+
+
+PICK_SYSTEM = """你在替玩家决定「清哪几块障碍」。给你的候选都带编号、位置、理由、体力代价。
+规矩：
+- 只清「在开垦区内/挡路」的；「开荒（区外没用）」的不要选
+- 一次最多选 6 个，够用就行，别贪
+- 体力不够就少选
+只输出 JSON：{"clear": [1,2], "reason": "一句话"}
+"""
+
+
+def pick_candidates(state_text, timeout=45):
+    """让模型从候选清单里挑（选择题模式）。失败时返回 None，调用方按前 N 个兜底。"""
+    key, base, model = _cfg()
+    if not key:
+        return None
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": PICK_SYSTEM},
+            {"role": "user", "content": state_text},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 200,
+        "response_format": {"type": "json_object"},
+    }
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(base, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", "Bearer " + key)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        text = payload["choices"][0]["message"]["content"]
+        return json.loads(text)
+    except Exception as e:  # noqa: BLE001
+        print("挑选失败：%s" % e, flush=True)
+        return None
 
 
 ACTION_SYSTEM = """你在玩星露谷物语，替玩家操作一个标准农场。每一轮给你当前状态，你只挑一个立刻要做的动作。

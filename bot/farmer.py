@@ -106,6 +106,31 @@ def _client_size(user32, hwnd):
     return r.right - r.left, r.bottom - r.top
 
 
+GAME_EXES = ("stardewmoddingapi.exe", "stardew valley.exe")
+SHELL_CLASSES = {"CabinetWClass", "ExploreWClass", "Progman", "WorkerW"}
+
+
+def _window_exe(hwnd):
+    """窗口属于哪个进程的可执行文件名（小写）。取不到就返回空串。"""
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not pid.value:
+        return ""
+    h = kernel32.OpenProcess(0x1000, False, pid.value)   # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(1024)
+        if not kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return ""
+        return os.path.basename(buf.value).lower()
+    finally:
+        kernel32.CloseHandle(h)
+
+
 def find_game_window(verbose=False):
     """找游戏主窗口。
 
@@ -134,6 +159,23 @@ def find_game_window(verbose=False):
         cls = _class_name(user32, hwnd)
         cw, ch = _client_size(user32, hwnd)
         is_console = _is_console_class(cls)
+        # 资源管理器/桌面窗口标题里也可能带 Stardew Valley（比如打开游戏文件夹）
+        if cls in SHELL_CLASSES:
+            if verbose:
+                try:
+                    print("  [候选] class=%s %dx%d %s  ← 资源管理器，排除" % (cls, cw, ch, title[:50]), flush=True)
+                except Exception:
+                    pass
+            return True
+        # 最硬的判据：看进程是谁
+        exe = _window_exe(hwnd)
+        if exe and exe not in GAME_EXES:
+            if verbose:
+                try:
+                    print("  [候选] class=%s %dx%d %s  ← 进程 %s 不是游戏，排除" % (cls, cw, ch, title[:40], exe), flush=True)
+                except Exception:
+                    pass
+            return True
         if verbose:
             try:
                 print("  [候选] class=%s %dx%d %s%s" % (
@@ -384,6 +426,8 @@ class Farmer:
         self.last_planted = 0
         self.last_watered = 0
         self.last_cleared = 0
+        self.last_cleared_in = 0      # 清在开垦区内的格数
+        self.last_cleared_out = 0     # 清在开垦区外的格数
         self.last_chops = 0
         self.last_seed_gain = []
         self.state_path = state_path
@@ -756,55 +800,71 @@ class Farmer:
         self.log("  实际翻地：%d" % done)
         return snap
 
-    async def clear_obstacles(self, snap, limit=8, min_energy=70):
-        """清农场上的障碍：杂草用镰刀，石头用镐，嫩枝和树用斧头。"""
+    async def clear_obstacles(self, snap, limit=8, min_energy=70, zone="cluster",
+                              need=None, picks=None):
+        """清农场上的障碍。
+
+        zone: none / cluster（只清开垦区内外 1 格）/ path（只清挡路的）/ all
+        need: 还缺几格耕地；不给就按 limit 当缺口（老调用方式）
+        picks: 只清候选清单里这几号（选择题模式用）
+        """
+        import farm_layout
+
         self.last_cleared = 0
+        self.last_cleared_in = 0
+        self.last_cleared_out = 0
         self.last_seed_gain = []
         seeds_before = {i.get("slot"): i.get("count", 0) for i in seeds_in(snap)}
-        # 树排最后：砍一棵要好几下，先把轻的清了
-        order = {"杂草": 0, "Grass": 0, "草": 0, "杂草丛": 0,
-                 "嫩枝": 1, "树枝": 1, "石头": 2, "岩石": 2}
-        pos = (snap.get("player") or {}).get("position") or {}
-        px, py = pos.get("x", 0), pos.get("y", 0)
-        cands = []
-        for e in ents(snap):
-            nm = e.get("name") or ""
-            tool = CLEAR_TOOLS.get(nm)
-            if not tool:
-                continue
-            t = e.get("tile") or {}
-            cands.append((order.get(nm, 9), abs(t.get("x", 0) - px) + abs(t.get("y", 0) - py), e, tool))
-        cands.sort(key=lambda x: (x[0], x[1]))
-        if not cands:
-            self.log("  附近没障碍")
+
+        need_v = int(need) if need is not None else int(limit)
+        if (zone or "cluster").lower() == "none" or need_v <= 0:
+            self.log("  不清障碍（zone=%s 缺口=%s）" % (zone, need_v))
             return snap
+
+        cands = farm_layout.clear_candidates(snap, zone=zone, need=need_v, max_n=int(limit))
+        if picks:
+            picks = set(int(x) for x in picks)
+            cands = [c for c in cands if c.get("i") in picks]
+        if not cands:
+            self.log("  需要的地方没障碍（zone=%s 缺口=%d）" % (zone, need_v))
+            return snap
+
+        self.log("  要清 %d 格（zone=%s 缺口=%d）：%s" % (
+            len(cands), zone, need_v,
+            "、".join("%s%s" % (c["name"], c["tile"]) for c in cands[:4])))
+
         done = 0
-        for _, _, e, tool in cands[:limit]:
+        for c in cands:
             energy = (snap.get("player") or {}).get("energy") or 0
             if not self.dry and energy < min_energy:
                 self.log("  体力只剩 %s，停止清理" % energy)
                 break
-            it = tool_slot(snap, tool)
+            it = tool_slot(snap, c["tool"])
             if not it:
-                self.log("  背包里没有 %s（杂草只能镰刀割）" % tool)
+                self.log("  背包里没有 %s（%s 清不了）" % (c["tool"], c["name"]))
                 continue
-            mv = await self.do("走到 %s" % (e.get("tile"),), self.b.move(near=e["ref"]))
+            mv = await self.do("走到 %s" % (c["tile"],), self.b.move(near=c["ref"]))
             if not self.dry and not mv:
                 continue
             await self.do("选 %s" % (it.get("name"),), self.b.select(it["slot"]))
-            r = await self.do("清 %s %s" % (e.get("name"), e.get("tile")), self.b.use(e["ref"]))
+            r = await self.do("清 %s %s" % (c["name"], c["tile"]), self.b.use(c["ref"]))
             if r:
                 done += 1
+                if c.get("in_cluster"):
+                    self.last_cleared_in += 1
+                else:
+                    self.last_cleared_out += 1
                 snap = r.get("snapshot") or snap
+
         self.last_cleared = done
-        # 清杂草偶尔掉混合种子，记一下多了什么
         for it in seeds_in(snap):
             was = seeds_before.get(it.get("slot"), 0)
             if it.get("count", 0) > was:
                 self.last_seed_gain.append((it.get("name"), it.get("count", 0) - was))
         if self.last_seed_gain:
             self.log("  掉了种子：%s" % ", ".join("%s x%d" % g for g in self.last_seed_gain))
-        self.log("  清了 %d 个障碍" % done)
+        self.log("  清了 %d 个障碍（区内 %d / 区外 %d，zone=%s）" % (
+            done, self.last_cleared_in, self.last_cleared_out, zone))
         return snap
 
     def _find_house_door(self, snap):
