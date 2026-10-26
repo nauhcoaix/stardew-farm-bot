@@ -9,7 +9,7 @@
 
 ```
 bot/
-  farm_service.py   常驻服务：白天干活、晚上睡觉、读微信指令、写日报
+  farm_service.py   常驻服务：白天干活、晚上睡觉、接指令（inbox）、写报告（outbox）
   planner.py        问模型要当日计划（JSON）
   farmer.py         底层动作：走位/清障/翻地/播种/浇水/收获/卖货
   farm_client.py    SMAPI mod 的子进程桥（WebSocket + JSON-RPC）
@@ -50,8 +50,8 @@ notepad bot\planner-config.json      # 填 api_key
 | 变量 | 作用 |
 |---|---|
 | `FARM_CFG` | 指定配置文件路径（默认 `bot/planner-config.json`） |
-| `FARM_REPORT_CHAT` | 日报发给哪个微信会话（默认 `me`） |
-| `WECHAT_AUTO` | 微信机器人目录（给 `start-wechat.bat` 用） |
+| `FARM_REPORT_CHAT` | 报告里写的收件人标签（默认 `me`），纯文本作用 |
+| `WECHAT_AUTO` | 微信机器人目录（给 `start-wechat.bat` 用，可选） |
 | `FARM_DATA` | 运行数据（日志/收发箱/备份）放哪，默认就是本目录 |
 | `FARM_RESET_HOURS` | 连续跑多久自动清一次动作记录（默认 8，防 OUTPUT_LIMIT） |
 
@@ -95,6 +95,19 @@ python bot\farm-doctor.py
 - SMAPI 控制台窗口标题里也有 `Stardew Valley`，按标题找窗口会认错 → 必须按窗口类名排除 `console`/`terminal`
 - `SetWindowPos` 拉窗口前要先 `ShowWindow(SW_RESTORE)`，最大化状态下直接拉不动
 
+## 和微信机器人解耦
+
+这个项目**跑起来不需要微信**。它只跟文件打交道：
+
+```
+<FARM_DATA>/inbox/<id>.json    {"id","cmd","arg","from","ts"}   指令（status/decisions/water/sleep/backup/task/reset）
+<FARM_DATA>/outbox/r*.json     {"id","chat","text","at"}        报告，没人读就会堆在目录里
+```
+
+以前微信机器人会读 `outbox` 发到微信、也往 `inbox` 塞指令；
+**现在两边已经拆开**，微信那边不含任何农场代码。
+想让报告重新进微信，自己做个小脚本读 `outbox/*.json` 就行，
+格式就上面那个。
 ## 许可
 
 MIT，见 LICENSE。游戏本体资源与 mod 版权归各自作者。
