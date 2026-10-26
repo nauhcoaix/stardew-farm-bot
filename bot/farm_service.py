@@ -168,6 +168,8 @@ try:
 except Exception:
     _reset_h = 8.0
 STARTED_AT = time.time()
+_last_bridge_err = ""
+_last_bridge_at = 0.0
 LAST_SNAP = {}          # 最近一次快照，给"马上回"用
 
 
@@ -666,6 +668,46 @@ def _digest_text(snap):
         return "（地图摘要算不出来：%s）" % e
 
 
+def _no_land_in_view(snap):
+    """快照里完全没有耕地/作物/可耕地 —— 多半是站得太远，摘要会失真。"""
+    try:
+        import farm_layout as _fl
+        d = _fl.farm_digest(snap)
+        c = d.get("counts") or {}
+        return (c.get("tilled", 0) + c.get("tillable", 0) + c.get("crops", 0)) == 0
+    except Exception:
+        return False
+
+
+_plot_view_next = [0.0]
+
+
+async def _snap_with_plot(b, f, snap):
+    """站得远看不到农田时，先走到农舍门口补一张快照，让规划有地可看。"""
+    if (snap.get("location") or "") != "Farm" or not _no_land_in_view(snap):
+        return snap
+    # 只有真快照才值得走一趟；测试/伪快照实体很少，直接跳过
+    if len(snap.get("entities") or []) < 60:
+        return snap
+    # 刚试过没成功就先别试，免得每轮都走一遍
+    if time.time() < _plot_view_next[0]:
+        return snap
+    log("视野里看不到农田，先走到农舍门口再看")
+    try:
+        await b.move(x=64, y=16)
+        await asyncio.sleep(0.8)
+        snap2 = await f.snap(16)
+        if snap2 and snap2.get("ok") is not False:
+            if _no_land_in_view(snap2):
+                _plot_view_next[0] = time.time() + 120
+                log("  到了门口还是看不到农田，两分钟内不再尝试")
+            return snap2
+    except Exception as exc:  # noqa: BLE001
+        _plot_view_next[0] = time.time() + 60
+        log("  走过去失败（%s），60 秒内不再尝试" % exc)
+    return snap
+
+
 def planning_text(snap, history=None):
     """构造纯文本状态副本；后台线程不能读取Bridge或修改当前快照。"""
     p = snap.get("player") or {}
@@ -707,7 +749,25 @@ def action_ready(snap, act, plan, history=None):
             any(e.get("diggable") and not e.get("tilled") and in_plot(e.get("tile"))
                 for e in available("till", ents(snap))))
     if a == "clear":
-        return energy >= int(arg.get("min_energy", plan.get("clear_min_energy", 70))) and int(arg.get("limit", 3)) > 0 and any(
+        if energy < int(arg.get("min_energy", plan.get("clear_min_energy", 70))):
+            return False
+        if int(arg.get("limit", 3)) <= 0:
+            return False
+        # 按"缺口驱动 + 区域闸门"判断到底有没有该清的：没候选就不算可执行
+        try:
+            import farm_layout
+            zone = str(plan.get("clear_zone") or "cluster").lower()
+            if zone == "none":
+                return False
+            need = int(plan.get("plant_target") or 0) - (
+                len(empty_tilled(snap)) + sum(1 for e in ents(snap) if e.get("diggable") and in_plot(e.get("tile"))))
+            cands = farm_layout.clear_candidates(snap, zone=zone, need=max(1, need), max_n=8)
+            if not cands:
+                return False
+            return any(tool_slot(snap, c["tool"]) for c in cands)
+        except Exception:
+            pass
+        return any(
             tool_slot(snap, CLEAR_TOOLS[e["name"]]) for e in available("clear", ents(snap)) if e.get("name") in CLEAR_TOOLS)
     if a == "chop":
         wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if i.get("name") == "木材")
@@ -801,7 +861,13 @@ async def _run_once(brain):
     try:
         await b.__aenter__()
     except Exception as exc:
-        log("连不上游戏桥：%s" % exc)
+        global _last_bridge_err, _last_bridge_at
+        now = time.time()
+        msg = str(exc)
+        # 同一条错误 60 秒内只记一次，别把日志刷满
+        if msg != _last_bridge_err or now - _last_bridge_at > 60:
+            log("连不上游戏桥：%s" % msg)
+            _last_bridge_err, _last_bridge_at = msg, now
         return False
     try:
         if _reset_h > 0 and time.time() - STARTED_AT > _reset_h * 3600:
@@ -823,6 +889,7 @@ async def _run_once(brain):
             snap = await f.snap(16)
         if not snap or snap.get("ok") is False:
             return False
+        snap = await _snap_with_plot(b, f, snap)
         remember(snap)
         brain.observe(snap)
         # 先接收新控制意图，再轮询旧结果，防止旧计划抢先执行。
@@ -941,8 +1008,12 @@ async def _run_once(brain):
             if remaining:
                 act = dict(act, arg=dict(act.get("arg") or {}, limit=remaining))
                 repeat = action_ready(snap, act, PLAN, brain.history)
+        # repeat 现在由 action_ready 严格判定（clear 会真的问"有没有候选"），
+        # 所以这里可以恢复原语义：还有别的目标就换目标重排，没有就交给 complete 冷却。
+        retry_other = name in counts and repeat
         brain.complete(act, progress, repeat=repeat and act.get("source") == "model",
-                       retry_other=name in counts and repeat)
+                       retry_other=retry_other)
+
         if name == "buy_seeds" and sum(i.get("count", 0) for i in seeds_in(snap)) > sum(i.get("count", 0) for i in seeds_in(before)):
             BOUGHT_DAY[0] = context_key(snap)
         if context_key(before) != context_key(snap):
@@ -1048,13 +1119,19 @@ async def main():
             return 0
         log("农场服务启动：后台规划，连续执行")
         pump = asyncio.create_task(pump_loop())
+        streak = 0
         while not stop_requested():
             try:
                 progressed = await run_once(brain)
-                delay = 0.1 if progressed else 2.0
             except Exception as exc:
                 log("这轮出错：%s" % exc)
-                delay = 5.0
+                progressed = False
+            if progressed:
+                streak = 0
+                delay = 0.1          # 有进展：几乎不停
+            else:
+                streak += 1
+                delay = min(30.0, 2.0 ** min(streak, 5))   # 2,4,8,16,32 -> 封顶 30
             # 有工作只短暂让出事件循环；空闲/断线时退避，避免空转。
             if not stop_requested():
                 await asyncio.sleep(delay)

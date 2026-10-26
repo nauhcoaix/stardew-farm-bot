@@ -62,6 +62,31 @@ def cluster_tiles(snap):
     return grown, base
 
 
+HOUSE_FALLBACK = (64, 15)     # 农舍门口（找不到 农舍入口 实体时用）
+PLOT = {"x1": 60, "x2": 69, "y1": 15, "y2": 22}   # 和 farmer.PLOT 保持一致
+
+
+def in_plot(tile):
+    if not tile:
+        return False
+    return PLOT["x1"] <= tile[0] <= PLOT["x2"] and PLOT["y1"] <= tile[1] <= PLOT["y2"]
+NEAR_WINDOW = 6               # 只放出"最近候选 + 6 格"以内的，防止跳远
+
+
+def house_tile(snap):
+    """农舍参照点：优先"农舍入口"实体，否则用固定坐标。"""
+    for e in ents(snap):
+        if (e.get("kind") or e.get("name")) == "农舍入口" and e.get("tile"):
+            t = _tile(e)
+            if t[0] is not None:
+                return t
+    return HOUSE_FALLBACK
+
+
+def dist(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
 def obstacle_list(snap):
     """所有可清的障碍（不含树，树走 chop）。"""
     out = []
@@ -263,6 +288,7 @@ def clear_candidates(snap, zone="cluster", need=0, max_n=12, max_cost=None):
 
     pos = (snap.get("player") or {}).get("position") or {}
     px, py = pos.get("x", 0), pos.get("y", 0)
+    house = house_tile(snap)
 
     out = []
     for nm, e in obs:
@@ -270,9 +296,14 @@ def clear_candidates(snap, zone="cluster", need=0, max_n=12, max_cost=None):
         in_cluster = t in grown
         on_path = t in paths
         if zone == "cluster":
-            if not in_cluster:
+            if in_cluster:
+                why, prio = "在开垦区内，清完能种", 1
+            elif not base and in_plot(t):
+                # 农场还没开垦：只允许在固定田块里开荒（仍按离农舍远近排）
+                why, prio = "开荒：田块内", 2
+                in_cluster = True      # 算"允许区域"，统计里不显示成区外
+            else:
                 continue
-            why, prio = "在开垦区内，清完能种", 1
         elif zone == "path":
             if not on_path:
                 continue
@@ -285,16 +316,26 @@ def clear_candidates(snap, zone="cluster", need=0, max_n=12, max_cost=None):
         d = abs(t[0] - px) + abs(t[1] - py)
         out.append({
             "tile": {"x": t[0], "y": t[1]},
-            "kind": nm,
+            # kind/name 必须保留快照里的原值：pantent 的 work_target 按 kind+name+坐标
+            # 重新绑定目标，改写成显示名会导致"找不到目标"而静默跳过
+            "kind": e.get("kind") or nm,
             "name": e.get("name") or nm,
             "ref": e.get("ref"),
             "tool": tool,
             "why": why,
             "cost": cost,
             "in_cluster": in_cluster,
-            "_sort": (prio, d),
+            "d_house": dist(t, house),
+            "_sort": (dist(t, house), prio, d),
         })
+    # 先清离农舍近的：按到农舍的距离升序，其次才是价值等级、离自己的远近
     out.sort(key=lambda c: c["_sort"])
+    if out and zone != "all":
+        nearest = out[0]["d_house"]
+        out = [c for c in out if c["d_house"] <= nearest + NEAR_WINDOW]
+    elif out and zone == "all":
+        nearest = out[0]["d_house"]
+        out = [c for c in out if c["d_house"] <= nearest + NEAR_WINDOW]
     if max_cost is not None:
         picked, used = [], 0
         for c in out:
