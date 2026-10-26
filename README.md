@@ -21,11 +21,20 @@ docs/               调研笔记（MCP 桥、协议、同类项目）
 
 ## 依赖
 
-1. **星露谷 1.6+** + **SMAPI**
-2. **Agent Stardew 的 SMAPI mod**（提供 `ws://127.0.0.1:17654` 桥）
-   - 开源项目，MIT 许可，源码不随本仓库分发
-3. **Python 3.12** + `pip install -r requirements.txt`
-4. 一个兼容 OpenAI 协议的模型接口（默认 DeepSeek）
+| 依赖 | 地址 | 说明 |
+|---|---|---|
+| 星露谷 1.6+ | Steam / GOG | 游戏本体 |
+| **SMAPI** | https://github.com/Pathoschild/SMAPI | mod 加载器，4.x |
+| **agent-stardew** | https://github.com/rottenpen/agent-stardew | **必需**。它的 `mods/AgentStardew` 提供 `ws://127.0.0.1:17654` 桥，本仓库通过 `farm_client.py` 连它 |
+| Python 3.12 | https://www.python.org | `pip install -r requirements.txt` |
+| 模型接口 | 默认 DeepSeek | 任何兼容 OpenAI 协议的都行 |
+
+`agent-stardew` 是 MIT 许可（`Copyright (c) 2026 agent-stardew contributors`），
+**源码不随本仓库分发**，请自行 clone 后编译 mod，把 `AgentStardew.dll` 放进
+`Mods/AgentStardew/`。
+
+本仓库对它做了一处改动（放开镰刀白名单，否则杂草割不掉），见
+[`docs/mod-scythe.md`](docs/mod-scythe.md) 与 [`docs/mod-scythe.patch`](docs/mod-scythe.patch)。
 
 ## 配置
 
