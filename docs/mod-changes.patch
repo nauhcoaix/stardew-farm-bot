@@ -1,13 +1,5 @@
-git.exe : warning: in the working copy of 'D:\1\steamapps\common\Stardew Valley\_dev\agent-stardew-src\mods\AgentStarde
-w\GameActions.cs.bak-20261026173717', LF will be replaced by CRLF the next time Git touches it
-所在位置 行:6 字符: 1
-+ & git diff --no-index --unified=3 $bak $ga 2>&1 | Out-File -FilePath  ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (warning: in the... Git touches it:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
 diff --git a/mods/AgentStardew/GameActions.cs b/mods/AgentStardew/GameActions.cs
-index 15114b2..61f5659 100644
+index 15114b2..6ec7a1a 100644
 --- a/mods/AgentStardew/GameActions.cs
 +++ b/mods/AgentStardew/GameActions.cs
 
@@ -28,7 +20,19 @@ index 15114b2..61f5659 100644
      private sealed class UseAction : IGameAction
      {
          private readonly Observations observations;
-@@ -166,9 +176,9 @@ public static class GameActions
+@@ -149,7 +159,10 @@ public static class GameActions
+         {
+             Game1.currentLocation.terrainFeatures.TryGetValue(tile.ToVector2(), out var terrain);
+             Game1.currentLocation.objects.TryGetValue(tile.ToVector2(), out var obj);
+-            return $"{terrain?.GetType().Name}/{(terrain as HoeDirt)?.state.Value}/{(terrain as HoeDirt)?.crop?.indexOfHarvest.Value}/{obj?.QualifiedItemId}";
++            // 树要好几下才倒：把 health/树桩/倒下 也算进状态，否则每一下都被判"没变化"
++            var tree = terrain as Tree;
++            var extra = tree == null ? "-" : $"h{tree.health.Value}{tree.stump.Value}{tree.falling.Value}";
++            return $"{terrain?.GetType().Name}/{(terrain as HoeDirt)?.state.Value}/{(terrain as HoeDirt)?.crop?.indexOfHarvest.Value}/{obj?.QualifiedItemId}/{extra}";
+         }
+         public UseAction(Observations observations, Observations.Target target)
+         {
+@@ -166,9 +179,9 @@ public static class GameActions
                  // 与游戏的物品放置入口一致，由游戏检查季节、物品并扣除数量。
                  if (!Utility.tryToPlaceItem(target.Location, seeds, target.Tile.X * 64, target.Tile.Y * 64)) throw new ActionFault("INSUFFICIENT_RESOURCE", "当前种子不能种在这里，请检查季节和土地。");
              }
@@ -40,7 +44,7 @@ index 15114b2..61f5659 100644
                  var refill = tool is WateringCan && target.Location.CanRefillWateringCanOnTile(target.Tile.X, target.Tile.Y);
                  if (!refill && player.Stamina < 2) throw new ActionFault("INSUFFICIENT_RESOURCE", "体力不足。");
                  if (tool is Hoe && (feature != null || target.Location.objects.ContainsKey(target.Tile.ToVector2()) || target.Location.doesTileHaveProperty(target.Tile.X, target.Tile.Y, "Diggable", "Back") == null)) throw new ActionFault("INVALID_ARGUMENT", "目标不是空置可耕地。");
-@@ -190,7 +200,7 @@ public static class GameActions
+@@ -190,7 +203,7 @@ public static class GameActions
                  player.toolPower.Value = 0;
                  player.BeginUsingTool();
              }

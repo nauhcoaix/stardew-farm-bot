@@ -33,8 +33,8 @@ docs/               调研笔记（MCP 桥、协议、同类项目）
 **源码不随本仓库分发**，请自行 clone 后编译 mod，把 `AgentStardew.dll` 放进
 `Mods/AgentStardew/`。
 
-本仓库对它做了一处改动（放开镰刀白名单，否则杂草割不掉），见
-[`docs/mod-scythe.md`](docs/mod-scythe.md) 与 [`docs/mod-scythe.patch`](docs/mod-scythe.patch)。
+本仓库对它做了两处改动（放开镰刀白名单、把树的生命值算进变化判定），见
+[`docs/mod-changes.md`](docs/mod-changes.md) 与 [`docs/mod-changes.patch`](docs/mod-changes.patch)。
 
 ## 配置
 
