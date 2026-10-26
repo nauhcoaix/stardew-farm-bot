@@ -69,6 +69,7 @@ WORK_CHUNK = 3  # 每段最多处理少量地块，随后检查控制指令和�
 sys.path.insert(0, DEV)
 from farm_client import Bridge  # noqa: E402
 import farm_layout  # noqa: E402
+import places  # noqa: E402
 import planner  # noqa: E402
 from farmer import (Farmer, ents, water_targets, harvestable, empty_tilled,  # noqa: E402
                     water_can, seeds_in, in_plot, tool_slot, CLEAR_TOOLS)
@@ -531,6 +532,170 @@ async def auto_clear(b, f, snap, plan):
     return snap
 
 
+def _map_center(snap):
+    """用可走格子的中位数当"往地图中间走"的目标，比硬编码坐标稳。"""
+    pts = []
+    for e in snap.get("entities") or []:
+        if e.get("passable") and e.get("tile"):
+            t = e["tile"]
+            if t.get("x") is not None:
+                pts.append((t["x"], t["y"]))
+    if not pts:
+        return None
+    xs = sorted(p[0] for p in pts)
+    ys = sorted(p[1] for p in pts)
+    return (xs[len(xs) // 2], ys[len(ys) // 2])
+
+
+def _edge_points(snap):
+    """地图四个方向的最远可走点（按"离自己远"排序），用来找视野外的出口。"""
+    pts = []
+    for e in snap.get("entities") or []:
+        if e.get("passable") and e.get("tile") and e["tile"].get("x") is not None:
+            pts.append((e["tile"]["x"], e["tile"]["y"]))
+    if not pts:
+        return []
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    out = []
+    for pick in (max(pts, key=lambda p: p[0]),           # 东
+                 min(pts, key=lambda p: p[0]),           # 西
+                 max(pts, key=lambda p: p[1]),           # 南
+                 min(pts, key=lambda p: p[1])):          # 北
+        if pick not in out:
+            out.append(pick)
+    return out
+
+
+async def _snap_settled(f, snap, want_exits=False, tries=5, delay=0.8):
+    """等场景稳定：刚切完地图时快照常常没有实体/出口，重试几次。"""
+    for i in range(tries):
+        loc = (snap.get("location") or "")
+        ents = len(snap.get("entities") or [])
+        exits = places.exits_of(snap)
+        ok = ents > 0 and loc and (not want_exits or exits)
+        if ok:
+            return snap
+        await asyncio.sleep(delay)
+        try:
+            snap = await f.snap(16)
+        except Exception:
+            pass
+    return snap
+
+
+async def travel(b, f, snap, dest):
+    """区域间移动：每次只看眼前，能看见哪个出口就往哪跳，直到到达目标区域。"""
+    dest = places.norm(dest)
+    if not dest:
+        return snap
+    snap = await _snap_settled(f, snap, want_exits=True)
+    here = places.norm(snap.get("location"))
+    target = places.norm(places.INDOOR.get(dest, dest))
+    if places.norm(places.INDOOR.get(here, here)) == target:
+        log("  已经在 %s，不用走" % here)
+        return snap
+
+    came_from = None
+    for step_no in range(8):
+        here = places.norm(snap.get("location"))
+        if places.norm(places.INDOOR.get(here, here)) == target:
+            log("  到 %s 了" % here)
+            return snap
+
+        visible = {places.norm(k): v for k, v in places.exits_of(snap).items()}
+        if not visible:
+            log("  %s 里一个出口都没看到，先往地图中间走" % here)
+            center = _map_center(snap)
+            if center:
+                walked = await f.do("走向地图中间", b.move(x=center[0], y=center[1]))
+                snap = (walked or {}).get("snapshot") or await f.snap(16)
+                snap = await _snap_settled(f, snap, want_exits=True)
+                continue
+            log("  看不到路，放弃这次移动")
+            return snap
+
+        # 从可见出口里挑：能到终点、且剩余跳数最少，尽量不走回头路
+        best = None
+        for name, entity in visible.items():
+            if name == here or (came_from and name == came_from and len(visible) > 1):
+                continue
+            sub = places.route(name, target)
+            if sub is None:
+                continue
+            cost = 1 + len(sub) + (3 if name == came_from else 0)   # 别立刻走回头路
+            if best is None or cost < best[0]:
+                best = (cost, name, entity, sub)
+        if best is None:
+            log("  %s 的出口（%s）都到不了 %s" % (here, ", ".join(sorted(visible)), dest))
+            return snap
+
+        cost, hop, ex, sub = best
+        tile = ex.get("tile") or {}
+        log("  %s → %s（再 %s，共 %d 跳）" % (
+            here, hop, " → ".join(sub) or "就到", cost))
+        if places.exit_to(snap, hop) is None:
+            # 这个出口在视野外（实测 BusStop 去小镇的出口在往东 30 多格外）
+            found = None
+            for edge in _edge_points(snap):
+                log("  去 %s 的出口不在视野里，先往地图边上 (%d,%d) 走" % (hop, edge[0], edge[1]))
+                walked = None
+                for attempt in range(3):
+                    walked = await f.do("走向地图边缘", b.move(x=edge[0], y=edge[1]))
+                    if walked:
+                        break
+                    if "BUSY" not in (f.last_error or ""):
+                        break
+                    await asyncio.sleep(1.2)
+                    snap = await f.snap(16)
+                snap = (walked or {}).get("snapshot") or await f.snap(16)
+                snap = await _snap_settled(f, snap, want_exits=True)
+                found = places.exit_to(snap, hop)
+                if found:
+                    break
+            if not found:
+                log("  还是找不到去 %s 的出口（能看见：%s）" % (
+                    hop, ", ".join(sorted(places.exits_of(snap))) or "（没有）"))
+                return snap
+            ex = found
+
+        moved = None
+        for attempt in range(5):
+            moved = await f.do("走到出口 %s" % (hop,), b.move(near=ex["ref"]))
+            if moved:
+                break
+            if "BUSY" not in (f.last_error or ""):
+                break
+            await asyncio.sleep(2.0)
+            try:
+                snap = await f.snap(16)
+                ex = places.exit_to(snap, hop) or ex
+            except Exception:
+                pass
+        if not moved:
+            log("  走不到出口（%s）" % (f.last_error or "未知原因"))
+            return snap
+        snap = moved.get("snapshot") or await f.snap(16)
+        if places.norm(snap.get("location")) != hop:
+            stepped = await f.do("踩上出口 %s" % (hop,), b.move(tile={"x": tile.get("x"), "y": tile.get("y")}))
+            if stepped:
+                snap = stepped.get("snapshot") or await f.snap(16)
+        if places.norm(snap.get("location")) != hop:
+            got = await f.do("交互出口 %s" % (hop,), b.interact(ex["ref"]))
+            if got:
+                snap = got.get("snapshot") or await f.snap(16)
+        snap = await _snap_settled(f, snap, want_exits=True)
+        now = places.norm(snap.get("location"))
+        if now == hop:
+            log("  到 %s 了" % hop)
+            came_from = here
+        else:
+            log("  还在 %s，没切到 %s" % (now, hop))
+            return snap
+    log("  走了太多跳，先停下（当前 %s）" % places.norm(snap.get("location")))
+    return snap
+
+
 async def run_action(b, f, snap, act):
     """执行模型挑的动作。"""
     snap = await f.ensure_free(snap)
@@ -552,6 +717,8 @@ async def run_action(b, f, snap, act):
         if not f.available_targets(snap, "plant", empty_tilled(snap)):
             snap = await f.till(snap, limit=limit)
         return await f.plant(snap, limit=limit)
+    if a == "travel":
+        return await travel(b, f, snap, arg.get("to") or arg.get("dest"))
     if a == "water":
         return await f.water_crops(snap, limit=WORK_CHUNK)
     if a == "chop":
@@ -742,6 +909,12 @@ def action_ready(snap, act, plan, history=None):
         return [e for e in targets if history is None or history.allowed(snap, operation, e)]
     if a == "sleep":
         return True
+    if a == "travel":
+        here = places.norm(snap.get("location"))
+        dest = places.norm(arg.get("to") or arg.get("dest"))
+        if not dest or dest == here:
+            return False
+        return places.route(here, dest, extra_edges={here: set(places.exits_of(snap))}) is not None
     if snap.get("location") != "Farm":
         return False
     if a == "harvest":
