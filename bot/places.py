@@ -1,3 +1,4 @@
+import os
 """地点（区域）之间的移动：把"相邻区域互走"做成可规划的技能。
 
 星露谷的区域是一张图，相邻才能走。这里维护这张图 + 从快照里解析当前区域的出口，
@@ -134,3 +135,41 @@ def describe_route(src, dst):
     if not hops:
         return "就在这里"
     return " → ".join([norm(src)] + hops)
+
+# ---------- 录下来的真实出口坐标 ----------
+_LEARNED = {"path": None, "data": {}}
+
+
+def learned_path():
+    data = os.environ.get("FARM_DATA") or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(data, "routes", "exits-learned.json")
+
+
+def learned_all():
+    """读录到的出口表；文件变了会自动重读。"""
+    import json
+    path = learned_path()
+    if _LEARNED["path"] == path and _LEARNED["data"]:
+        return _LEARNED["data"]
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+    _LEARNED["path"], _LEARNED["data"] = path, data
+    return data
+
+
+def learned_hop(src, dst):
+    """录到的 (src -> dst) 出口坐标。"""
+    data = learned_all()
+    src, dst = norm(src), norm(dst)
+    for key in (src,):
+        m = data.get(key) or {}
+        for k, v in m.items():
+            if norm(k) == dst:
+                try:
+                    return {"leave": list(v.get("leave") or []), "enter": list(v.get("enter") or [])}
+                except Exception:
+                    return None
+    return None

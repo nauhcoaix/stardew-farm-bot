@@ -584,11 +584,31 @@ async def _snap_settled(f, snap, want_exits=False, tries=5, delay=0.8):
     return snap
 
 
+async def _ensure_game_active(f, snap, tries=25):
+    """等世界就绪：select(0) 是无害动作，能成功就说明 CanMove 正常（不在读档/过场里）。"""
+    for i in range(tries):
+        try:
+            r = await f.b.select(0)
+            if r:
+                try:
+                    snap = r.get("snapshot") or snap
+                except Exception:
+                    pass
+                return snap
+        except Exception as exc:
+            if "BUSY" not in str(exc) and "INCOMPATIBLE" not in str(exc):
+                log("  探活失败：%s" % exc)
+        await asyncio.sleep(1.0)
+    log("  等了 %d 秒游戏还不能操作（可能在读档/过场）" % tries)
+    return snap
+
+
 async def travel(b, f, snap, dest):
     """区域间移动：每次只看眼前，能看见哪个出口就往哪跳，直到到达目标区域。"""
     dest = places.norm(dest)
     if not dest:
         return snap
+    snap = await _ensure_game_active(f, snap)
     snap = await _snap_settled(f, snap, want_exits=True)
     here = places.norm(snap.get("location"))
     target = places.norm(places.INDOOR.get(dest, dest))
@@ -604,8 +624,10 @@ async def travel(b, f, snap, dest):
             return snap
 
         visible = {places.norm(k): v for k, v in places.exits_of(snap).items()}
-        if not visible:
-            log("  %s 里一个出口都没看到，先往地图中间走" % here)
+        learned_here = {places.norm(k) for k in (places.learned_all().get(here) or {})}
+        cand_names = set(visible) | set(learned_here)
+        if not cand_names:
+            log("  %s 里没有出口，也没有录过的路线，先往地图中间走" % here)
             center = _map_center(snap)
             if center:
                 walked = await f.do("走向地图中间", b.move(x=center[0], y=center[1]))
@@ -615,25 +637,46 @@ async def travel(b, f, snap, dest):
             log("  看不到路，放弃这次移动")
             return snap
 
-        # 从可见出口里挑：能到终点、且剩余跳数最少，尽量不走回头路
+        # 视野里的出口 + 录到的出口一起做候选：挑剩余跳数最少、尽量不走回头路
         best = None
-        for name, entity in visible.items():
-            if name == here or (came_from and name == came_from and len(visible) > 1):
+        for name in cand_names:
+            if name == here or (came_from and name == came_from and len(cand_names) > 1):
                 continue
             sub = places.route(name, target)
             if sub is None:
                 continue
-            cost = 1 + len(sub) + (3 if name == came_from else 0)   # 别立刻走回头路
+            cost = 1 + len(sub) + (3 if name == came_from else 0)
             if best is None or cost < best[0]:
-                best = (cost, name, entity, sub)
+                best = (cost, name, visible.get(name), sub)
         if best is None:
-            log("  %s 的出口（%s）都到不了 %s" % (here, ", ".join(sorted(visible)), dest))
+            log("  %s 的出口（%s）都到不了 %s" % (here, ", ".join(sorted(cand_names)), dest))
             return snap
 
         cost, hop, ex, sub = best
-        tile = ex.get("tile") or {}
-        log("  %s → %s（再 %s，共 %d 跳）" % (
-            here, hop, " → ".join(sub) or "就到", cost))
+        tile = (ex or {}).get("tile") or {}
+        log("  %s → %s（再 %s，共 %d 跳）%s" % (
+            here, hop, " → ".join(sub) or "就到", cost,
+            "" if ex else "（按录到的坐标走）"))
+
+        # 1) 有录到的坐标就直接走过去
+        learned = places.learned_hop(here, hop)
+        if learned and learned.get("leave"):
+            lx, ly = learned["leave"][:2]
+            log("  按录到的路线走到 (%d,%d)" % (lx, ly))
+            for attempt in range(4):
+                walked = await f.do("走到 (%d,%d)" % (lx, ly), b.move(x=lx, y=ly))
+                snap = (walked or {}).get("snapshot") or await f.snap(16)
+                snap = await _snap_settled(f, snap, want_exits=True)
+                if places.norm(snap.get("location")) == hop:
+                    log("  到 %s 了" % hop)
+                    break
+                if "BUSY" not in (f.last_error or ""):
+                    break
+                await asyncio.sleep(1.5)
+            if places.norm(snap.get("location")) == hop:
+                came_from = here
+                continue
+            log("  没切到 %s（现在 %s），换别的办法" % (hop, places.norm(snap.get("location"))))
         if places.exit_to(snap, hop) is None:
             # 这个出口在视野外（实测 BusStop 去小镇的出口在往东 30 多格外）
             found = None
@@ -659,6 +702,9 @@ async def travel(b, f, snap, dest):
                 return snap
             ex = found
 
+        if not ex:
+            log("  %s 既没录到路线、视野里也看不到去 %s 的出口，放弃这一跳" % (here, hop))
+            return snap
         moved = None
         for attempt in range(5):
             moved = await f.do("走到出口 %s" % (hop,), b.move(near=ex["ref"]))
