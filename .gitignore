@@ -44,3 +44,12 @@ planner-config.json
 config.json
 .env
 *.key
+
+# 第三方源码自带的图片资源（上游 README 引用）
+!mod/agent-stardew/assets/**
+
+# 上游源码目录叫 mods/（小写），别被上面游戏 Mods/ 规则误伤
+!mod/agent-stardew/mods/
+!mod/agent-stardew/mods/**
+mod/agent-stardew/mods/**/*.bak-*
+mod/agent-stardew/**/*.user

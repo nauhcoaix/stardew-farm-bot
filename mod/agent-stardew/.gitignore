@@ -1,0 +1,13 @@
+node_modules/
+dist/
+lib/
+coverage/
+work/
+packages/dsh-plugin/ui/assets/
+.env
+.env.*
+!.env.example
+.DS_Store
+**/bin/
+**/obj/
+*.log
