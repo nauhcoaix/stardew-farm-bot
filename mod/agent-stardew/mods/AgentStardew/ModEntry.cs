@@ -119,6 +119,13 @@ public sealed class ModEntry : Mod
                 {
                     Send(pending, Response.Ok(r, MenuDump.Dump())); continue;
                 }
+                if (r.Command == "reset")
+                {
+                    // 清空动作记录表（幂等保护用的），避免 20 万条后 OUTPUT_LIMIT 卡死
+                    actions.Reset();
+                    Send(pending, Response.Ok(r, new { kind = "reset", reset = true }));
+                    continue;
+                }
                 if (r.Command == "screenshot")
                 {
                     if (screenshot != null) throw new ActionFault("BUSY", "已有截图请求。");

@@ -1,8 +1,11 @@
 diff --git a/mods/AgentStardew/GameActions.cs b/mods/AgentStardew/GameActions.cs
-index 15114b2..6ec7a1a 100644
 --- a/mods/AgentStardew/GameActions.cs
 +++ b/mods/AgentStardew/GameActions.cs
-
+@@ -1,4 +1,4 @@
+-using Microsoft.Xna.Framework;
+ using StardewModdingAPI;
+ using StardewValley;
+ using StardewValley.Menus;
 @@ -135,6 +135,16 @@ public static class GameActions
              player.Halt();
          }
@@ -53,3 +56,39 @@ index 15114b2..6ec7a1a 100644
          }
          public object? Tick()
          {
+diff --git a/mods/AgentStardew/ModEntry.cs b/mods/AgentStardew/ModEntry.cs
+--- a/mods/AgentStardew/ModEntry.cs
++++ b/mods/AgentStardew/ModEntry.cs
+@@ -119,6 +119,13 @@ public sealed class ModEntry : Mod
+                 {
+                     Send(pending, Response.Ok(r, MenuDump.Dump())); continue;
+                 }
++                if (r.Command == "reset")
++                {
++                    // 清空动作记录表（幂等保护用的），避免 20 万条后 OUTPUT_LIMIT 卡死
++                    actions.Reset();
++                    Send(pending, Response.Ok(r, new { kind = "reset", reset = true }));
++                    continue;
++                }
+                 if (r.Command == "screenshot")
+                 {
+                     if (screenshot != null) throw new ActionFault("BUSY", "已有截图请求。");
+diff --git a/mods/AgentStardew/Protocol.cs b/mods/AgentStardew/Protocol.cs
+--- a/mods/AgentStardew/Protocol.cs
++++ b/mods/AgentStardew/Protocol.cs
+@@ -24,12 +24,13 @@ public static class Protocol
+         PropertyNameCaseInsensitive = false,
+         DefaultIgnoreCondition = JsonIgnoreCondition.Never
+     };
+-    public static readonly string[] Capabilities = { "snapshot", "menudump", "menuclick", "menuclickinv", "menuclose", "move", "select", "use", "interact", "menu", "screenshot", "status", "stop" };
++    public static readonly string[] Capabilities = { "snapshot", "menudump", "menuclick", "menuclickinv", "menuclose", "move", "select", "use", "interact", "menu", "screenshot", "status", "stop", "reset" };
+     public static void Validate(Request r)
+     {
+         string[] allowed = r.Command switch
+         {
+-            "hello" or "snapshot" or "status" or "screenshot" or "stop" or "menudump" => r.Command == "snapshot" ? new[] { "radius" } : r.Command == "stop" ? new[] { "actionId" } : Array.Empty<string>(),
++            "reset" => Array.Empty<string>(),
++                "hello" or "snapshot" or "status" or "screenshot" or "stop" or "menudump" => r.Command == "snapshot" ? new[] { "radius" } : r.Command == "stop" ? new[] { "actionId" } : Array.Empty<string>(),
+             "menuclick" or "menuclickinv" => new[] { "x", "y" }, "shopbuy" => new[] { "index", "qty" }, "placechest" => new[] { "x", "y" }, "chestput" => new[] { "x", "y", "slot" }, "ship" => new[] { "slot" }, "bin" or "forceunlock" => Array.Empty<string>(), "warp" => new[] { "location", "x", "y" }, "chestget" => new[] { "x", "y", "name" }, "menuclose" => Array.Empty<string>(), "move" => new[] { "near", "tile" }, "select" => new[] { "slot" }, "use" or "interact" or "menu" => new[] { "target" },
+             _ => throw new ActionFault("UNSUPPORTED", "未知命令。")
+         };

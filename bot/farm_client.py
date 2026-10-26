@@ -96,6 +96,10 @@ class Bridge:
     async def interact(self, ref):
         return await self.request("interact", {"target": ref})
 
+    async def reset(self):
+        """清空 mod 的动作记录（幂等表），防止攒到 20 万条后 OUTPUT_LIMIT。"""
+        return await self.request("reset", {}, timeout_ms=10000)
+
     async def menu(self, ref):
         return await self.request("menu", {"target": ref})
 

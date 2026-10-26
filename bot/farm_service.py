@@ -152,6 +152,69 @@ def take_commands():
     return cmds
 
 
+# 动作记录跑满就清零（mod 侧上限 20 万条，超了就 OUTPUT_LIMIT 卡死）
+try:
+    _reset_h = float(os.environ.get("FARM_RESET_HOURS") or 8)
+except Exception:
+    _reset_h = 8.0
+STARTED_AT = time.time()
+LAST_SNAP = {}          # 最近一次快照，给"马上回"用
+
+
+def remember(snap):
+    try:
+        if snap:
+            LAST_SNAP.clear()
+            LAST_SNAP.update(snap)
+    except Exception:
+        pass
+
+
+def take_quick_commands():
+    """收件箱里的 status/decisions：不等这一轮干完，立刻用最近快照回。
+
+    返回处理掉的条数。其余指令（water/sleep/task/backup）留给本轮正常流程。
+    """
+    handled = 0
+    for p in sorted(glob.glob(os.path.join(INBOX, "*.json"))):
+        try:
+            with open(p, "r", encoding="utf-8-sig") as fh:
+                cmd = json.load(fh)
+        except Exception:
+            continue
+        c = (cmd.get("cmd") or "").lower()
+        try:
+            if c == "status":
+                if LAST_SNAP:
+                    queue_report("（先报个大概）" + summary_text(LAST_SNAP, {"watered": 0, "harvested": 0}))
+                else:
+                    queue_report("收到了，还没读到农场状态，这一轮干完就报。")
+            elif c == "decisions":
+                queue_report(last_decisions(5))
+            else:
+                continue
+            handled += 1
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        except Exception as e:  # noqa: BLE001
+            log("即时回执出错：%s" % e)
+    return handled
+
+
+async def pump_loop():
+    """每 5 秒看一次收件箱，专管"马上回"的那两种指令。"""
+    while not stop_requested():
+        try:
+            n = take_quick_commands()
+            if n:
+                log("即时回执 %d 条" % n)
+        except Exception as e:  # noqa: BLE001
+            log("回执循环出错：%s" % e)
+        await asyncio.sleep(5)
+
+
 def stop_requested():
     return os.path.exists(STOP_FILE)
 
@@ -617,6 +680,17 @@ async def run_once():
         log("连不上游戏桥：%s" % e)
         return True
 
+    # 跑太久就把 mod 的动作记录清零（等价于重启，但不用真重启）
+    global STARTED_AT
+    if _reset_h > 0 and (time.time() - STARTED_AT) > _reset_h * 3600:
+        try:
+            await b.reset()
+            ran = (time.time() - STARTED_AT) / 3600
+            STARTED_AT = time.time()
+            log("动作记录已清零（已连续跑 %0.1f 小时），避免 OUTPUT_LIMIT" % ran)
+        except Exception as _e:  # noqa: BLE001
+            log("清零动作记录失败：%s" % _e)
+
     try:
         f = Farmer(b, state_path=os.path.join(DEV, "farm-state.json"), log=log)
         try:
@@ -635,6 +709,7 @@ async def run_once():
             log("没有存档 / 桥未就绪：%s" % (snap or {}).get("reason"))
             return True
 
+        remember(snap)
         stats = {"watered": 0, "harvested": 0}
         cmds = take_commands()
         do_sleep = False
@@ -674,6 +749,10 @@ async def run_once():
                         log("任务结果：%s" % _done)
                 elif c == "decisions":
                     queue_report(last_decisions(5))
+                elif c == "reset":
+                    await b.reset()
+                    STARTED_AT = time.time()
+                    queue_report("动作记录已清零，接着干")
                 elif c == "backup":
                     backup_saves()
             except Exception as e:  # noqa: BLE001
@@ -948,6 +1027,7 @@ async def main():
         return 0 if ok else 1
 
     log("农场服务启动")
+    pump = asyncio.create_task(pump_loop())
     while not stop_requested():
         try:
             await run_once()
@@ -958,6 +1038,10 @@ async def main():
             if stop_requested():
                 break
             await asyncio.sleep(5)
+    try:
+        pump.cancel()
+    except Exception:
+        pass
     log("农场服务退出")
     return 0
 

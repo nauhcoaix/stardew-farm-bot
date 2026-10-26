@@ -97,3 +97,42 @@ copy "<agent-stardew>\mods\AgentStardew\bin\Release\net6.0\AgentStardew.dll" "<�
 
 改之前同样这 24 下里，除了砍倒的那两下，其余每一挥都会抛
 `UNSUPPORTED: 工具动画结束，但目标未发生可验证变化`。
+
+## 3. 动作记录清零（防 OUTPUT_LIMIT）
+
+`ActionCoordinator` 会把每个 actionId 记在 `seen` 字典里做幂等保护，
+**上限 20 万条**，超了就一律返回：
+
+```
+OUTPUT_LIMIT: 本次存档会话已达动作记录上限，请在存档后重新加载。
+```
+
+只有「读档 / 回主菜单」才清零。农场机器人一天干几万个动作，几天就顶满，
+表现是「服务还在跑，但什么都不做」。
+
+加一个 `reset` 命令，让客户端能主动清空这张表（不用重启游戏）：
+
+```csharp
+// ModEntry.cs
+if (r.Command == "reset")
+{
+    actions.Reset();
+    Send(pending, Response.Ok(r, new { kind = "reset", reset = true }));
+    continue;
+}
+```
+
+```csharp
+// Protocol.cs：允许 reset 通过校验
+"reset" => Array.Empty<string>(),
+```
+
+客户端 `farm_client.py`：
+
+```python
+async def reset(self):
+    return await self.request("reset", {}, timeout_ms=10000)
+```
+
+`farm_service.py` 的策略：连续跑满 `FARM_RESET_HOURS`（默认 8 小时）就自动清零一次，
+也可以在收件箱里发 `{"cmd": "reset"}` 手动清。
