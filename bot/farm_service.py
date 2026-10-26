@@ -548,22 +548,17 @@ def _map_center(snap):
 
 
 def _edge_points(snap):
-    """地图四个方向的最远可走点（按"离自己远"排序），用来找视野外的出口。"""
-    pts = []
-    for e in snap.get("entities") or []:
-        if e.get("passable") and e.get("tile") and e["tile"].get("x") is not None:
-            pts.append((e["tile"]["x"], e["tile"]["y"]))
-    if not pts:
+    """从当前位置向外推的点（快照只有 16 格，靠这个一点点往地图边界走）。"""
+    pos = (snap.get("player") or {}).get("position") or {}
+    x, y = pos.get("x"), pos.get("y")
+    if x is None:
         return []
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
     out = []
-    for pick in (max(pts, key=lambda p: p[0]),           # 东
-                 min(pts, key=lambda p: p[0]),           # 西
-                 max(pts, key=lambda p: p[1]),           # 南
-                 min(pts, key=lambda p: p[1])):          # 北
-        if pick not in out:
-            out.append(pick)
+    for r in (14, 28, 42):
+        for dx, dy in ((0, -r), (0, r), (r, 0), (-r, 0)):
+            tx, ty = x + dx, y + dy
+            if 0 <= tx <= 120 and 0 <= ty <= 120:
+                out.append((tx, ty))
     return out
 
 
@@ -658,22 +653,29 @@ async def travel(b, f, snap, dest):
             here, hop, " → ".join(sub) or "就到", cost,
             "" if ex else "（按录到的坐标走）"))
 
-        # 1) 有录到的坐标就直接走过去
+        # 1) 有录到的路线就按拐点一段段走（一次走太远会 PATH_BLOCKED）
         learned = places.learned_hop(here, hop)
         if learned and learned.get("leave"):
-            lx, ly = learned["leave"][:2]
-            log("  按录到的路线走到 (%d,%d)" % (lx, ly))
-            for attempt in range(4):
-                walked = await f.do("走到 (%d,%d)" % (lx, ly), b.move(x=lx, y=ly))
-                snap = (walked or {}).get("snapshot") or await f.snap(16)
-                snap = await _snap_settled(f, snap, want_exits=True)
+            wps = [tuple(w[:2]) for w in (learned.get("path") or []) if w and w[0] is not None]
+            last = tuple(learned["leave"][:2])
+            if not wps or wps[-1] != last:
+                wps.append(last)
+            # 只保留"越走越靠近终点"的拐点，避免绕回头
+            log("  按录到的路线走：%d 个拐点，终点 (%d,%d)" % (len(wps), last[0], last[1]))
+            for idx, (wx, wy) in enumerate(wps):
                 if places.norm(snap.get("location")) == hop:
-                    log("  到 %s 了" % hop)
                     break
-                if "BUSY" not in (f.last_error or ""):
-                    break
-                await asyncio.sleep(1.5)
+                for attempt in range(3):
+                    walked = await f.do("拐点%d (%d,%d)" % (idx + 1, wx, wy), b.move(x=wx, y=wy))
+                    snap = (walked or {}).get("snapshot") or await f.snap(16)
+                    snap = await _snap_settled(f, snap, want_exits=True)
+                    if places.norm(snap.get("location")) == hop:
+                        break
+                    if "BUSY" not in (f.last_error or ""):
+                        break
+                    await asyncio.sleep(1.5)
             if places.norm(snap.get("location")) == hop:
+                log("  到 %s 了" % hop)
                 came_from = here
                 continue
             log("  没切到 %s（现在 %s），换别的办法" % (hop, places.norm(snap.get("location"))))

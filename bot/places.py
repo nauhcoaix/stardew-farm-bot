@@ -169,7 +169,9 @@ def learned_hop(src, dst):
         for k, v in m.items():
             if norm(k) == dst:
                 try:
-                    return {"leave": list(v.get("leave") or []), "enter": list(v.get("enter") or [])}
+                    return {"leave": list(v.get("leave") or []),
+                            "enter": list(v.get("enter") or []),
+                            "path": [list(w) for w in (v.get("path") or [])]}
                 except Exception:
                     return None
     return None
