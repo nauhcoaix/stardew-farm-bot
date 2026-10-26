@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-DEV = os.path.dirname(os.path.abspath(__file__))
+DEV = os.environ.get("FARM_DATA") or os.path.dirname(os.path.abspath(__file__))
 GAME = os.path.dirname(DEV)
 EXE = os.path.join(GAME, "StardewModdingAPI.exe")
 RUN_NAME = os.path.join(DEV, "launch-farm.log")

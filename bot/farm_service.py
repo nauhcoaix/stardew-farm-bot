@@ -22,7 +22,7 @@ import sys
 import time
 import zipfile
 
-DEV = os.path.dirname(os.path.abspath(__file__))
+DEV = os.environ.get("FARM_DATA") or os.path.dirname(os.path.abspath(__file__))  # 代码可在别处，数据留在游戏目录
 GAME = os.path.dirname(DEV)
 INBOX = os.path.join(DEV, "inbox")
 OUTBOX = os.path.join(DEV, "outbox")

@@ -36,8 +36,9 @@ def in_plot(tile):
     return PLOT["x1"] <= tile.get("x", -1) <= PLOT["x2"] and PLOT["y1"] <= tile.get("y", -1) <= PLOT["y2"]
 
 
-LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input.lock")
-WECHAT_LOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wechat.lock")
+_DATA_DIR = os.environ.get("FARM_DATA") or os.path.dirname(os.path.abspath(__file__))
+LOCK_FILE = os.path.join(_DATA_DIR, "input.lock")
+WECHAT_LOCK = os.path.join(_DATA_DIR, "wechat.lock")
 
 
 

@@ -43,6 +43,20 @@ notepad bot\planner-config.json      # 填 api_key
 | `FARM_CFG` | 指定配置文件路径（默认 `bot/planner-config.json`） |
 | `FARM_REPORT_CHAT` | 日报发给哪个微信会话（默认 `me`） |
 | `WECHAT_AUTO` | 微信机器人目录（给 `start-wechat.bat` 用） |
+| `FARM_DATA` | 运行数据（日志/收发箱/备份）放哪，默认就是本目录 |
+
+### 代码放别处，数据留在游戏目录
+
+游戏目录通常很大又不想进 git，可以只把 `bot/` 放到仓库里，
+用目录 junction 挂回游戏目录（Windows 不需要管理员）：
+
+```powershell
+mklink /J "<游戏目录>\_dev\bot" "D:\code\stardew-farm-bot\bot"
+set FARM_DATA=<游戏目录>\_dev
+```
+
+`FARM_DATA` 决定 `farm-service.log`、`inbox/`、`outbox/`、`status.json`、
+`input.lock` 写在哪里；代码本身可以只在仓库里维护一份。
 
 ## 跑起来
 
