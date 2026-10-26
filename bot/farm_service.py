@@ -1,4 +1,4 @@
-﻿r"""农场服务：常驻跑，白天干活，晚上睡觉，日报进 outbox，指令从 inbox 读。
+r"""农场服务：常驻跑，白天干活，晚上睡觉，日报进 outbox，指令从 inbox 读。
 
 目录（都在游戏目录 _dev 下）：
   inbox\    微信来的指令，JSON：{"id":"c1","cmd":"water|status|sleep|plant","arg":""}
@@ -64,13 +64,14 @@ FESTIVALS = {
 STOP_FILE = os.path.join(DEV, "STOP")
 SAVES = os.path.join(os.environ.get("APPDATA", ""), "StardewValley", "Saves")
 REPORT_CHAT = os.environ.get("FARM_REPORT_CHAT") or "me"   # 日报发给谁（微信会话名）
-WORK_INTERVAL_MIN = 25
+WORK_CHUNK = 3  # 每段最多处理少量地块，随后检查控制指令和新计划
 
 sys.path.insert(0, DEV)
 from farm_client import Bridge  # noqa: E402
 import planner  # noqa: E402
 from farmer import (Farmer, ents, water_targets, harvestable, empty_tilled,  # noqa: E402
-                    water_can, seeds_in)
+                    water_can, seeds_in, in_plot, tool_slot, CLEAR_TOOLS)
+from work_planner import WorkPlanner, context_key  # noqa: E402
 
 
 DECISIONS_FILE = os.path.join(DEV, "decisions.jsonl")
@@ -257,7 +258,7 @@ def status_line_text(snap, money=None):
         int(money if money is not None else (p.get("money") or 0)), used, cap, snap.get("location"))
 
 
-def write_status(snap, money=None, action=None):
+def write_status(snap, money=None, action=None, brain=None):
     """把当前状态写出来，微信那边好直接回答。"""
     global LAST_ACTION, LAST_MONEY
     if money is not None:
@@ -293,6 +294,8 @@ def write_status(snap, money=None, action=None):
         "action": LAST_ACTION,
         "updated": time.strftime("%H:%M:%S"),
     }
+    if brain is not None:
+        row["planner"] = {"thinking": brain.thinking, "queued_steps": brain.queued}
     try:
         with open(STATUS_FILE, "w", encoding="utf-8") as f:
             json.dump(row, f, ensure_ascii=False)
@@ -300,27 +303,6 @@ def write_status(snap, money=None, action=None):
         pass
 
 
-async def refresh_plan(b, f, snap):
-    """把当前状态发给模型，让它决定今天怎么干。"""
-    d = snap.get("date") or {}
-    p = snap.get("player") or {}
-    inv = snap.get("inventory") or []
-    seeds = sum(i.get("count", 0) for i in inv if "种子" in (i.get("name") or ""))
-    wood = sum(i.get("count", 0) for i in inv if (i.get("name") or "") == "木材")
-    used = sum(1 for i in inv if (i.get("count") or 0) > 0)
-    cap = int(p.get("maxItems") or 12)
-    crops = sum(1 for e in (snap.get("entities") or []) if e.get("crop"))
-    money = None
-    try:
-        md = await b.request("menudump", {})
-        money = md.get("money")
-    except Exception:
-        pass
-    text = ("第%s天 %s %s点，体力 %s/%s，钱 %s，种子 %s，作物 %s 株，背包 %s/36，木材 %s"
-            % (d.get("day"), d.get("season"), snap.get("time"), p.get("energy"), p.get("maxEnergy"),
-               money, seeds, crops, used, wood))
-    log("问模型：%s" % text)
-    return await asyncio.to_thread(planner.ask, text)
 
 
 def record_decision(act, snap):
@@ -462,56 +444,8 @@ def last_decisions(n=5):
     return "最近决策：" + "；".join(out) if out else "还没有决策记录"
 
 
-async def state_text(b, snap):
-    d = snap.get("date") or {}
-    p = snap.get("player") or {}
-    inv = snap.get("inventory") or []
-    seeds = sum(i.get("count", 0) for i in inv if "种子" in (i.get("name") or ""))
-    wood = sum(i.get("count", 0) for i in inv if (i.get("name") or "") == "木材")
-    used = sum(1 for i in inv if (i.get("count") or 0) > 0)
-    cap = int(p.get("maxItems") or 12)
-    ents = snap.get("entities") or []
-    crops = sum(1 for e in ents if e.get("crop"))
-    ready = sum(1 for e in ents if e.get("harvestable"))
-    dry = sum(1 for e in ents if e.get("kind") == "soil" and e.get("crop") and e.get("needsWater"))
-    obst = sum(1 for e in ents if (e.get("name") or "") in ("Tree", "树", "石头", "杂草", "嫩枝", "Grass"))
-    _can = water_can(snap) or {}
-    money = None
-    try:
-        md = await b.request("menudump", {})
-        money = md.get("money")
-    except Exception:
-        pass
-    return ("第%s天 %s %s点 | 体力 %s/%s | 钱 %s | 种子 %s | 作物 %s 株（成熟 %s，缺水 %s）| 背包 %s/36 | 木材 %s | 水壶 %s | 附近障碍 %s | 位置 %s"
-            % (d.get("day"), d.get("season"), snap.get("time"), int(p.get("energy") or 0), int(p.get("maxEnergy") or 0),
-               money, seeds, crops, ready, dry, used, wood, _can.get("water"), obst, snap.get("location")))
 
 
-async def decide_next(b, f, snap):
-    """把状态发给模型，让它挑下一个动作。"""
-    d = snap.get("date") or {}
-    p = snap.get("player") or {}
-    inv = snap.get("inventory") or []
-    seeds = sum(i.get("count", 0) for i in inv if "种子" in (i.get("name") or ""))
-    wood = sum(i.get("count", 0) for i in inv if (i.get("name") or "") == "木材")
-    used = sum(1 for i in inv if (i.get("count") or 0) > 0)
-    cap = int(p.get("maxItems") or 12)
-    ents = snap.get("entities") or []
-    crops = sum(1 for e in ents if e.get("crop"))
-    ready = sum(1 for e in ents if e.get("harvestable"))
-    dry = sum(1 for e in ents if e.get("kind") == "soil" and e.get("crop") and e.get("needsWater"))
-    obst = sum(1 for e in ents if (e.get("name") or "") in ("Tree", "树", "石头", "杂草", "嫩枝", "Grass"))
-    _can = water_can(snap) or {}
-    money = None
-    try:
-        md = await b.request("menudump", {})
-        money = md.get("money")
-    except Exception:
-        pass
-    text = ("第%s天 %s %s点 | 体力 %s/%s | 钱 %s | 种子 %s | 作物 %s 株（成熟 %s，缺水 %s）| 背包 %s/36 | 木材 %s | 水壶 %s | 附近障碍 %s | 位置 %s"
-            % (d.get("day"), d.get("season"), snap.get("time"), p.get("energy"), p.get("maxEnergy"),
-               money, seeds, crops, ready, dry, used, wood, _can.get("water"), obst, snap.get("location")))
-    return await asyncio.to_thread(planner.next_action, text)
 
 
 async def run_action(b, f, snap, act):
@@ -520,19 +454,21 @@ async def run_action(b, f, snap, act):
     a = (act.get("action") or "").lower()
     arg = act.get("arg") or {}
     if a == "harvest":
-        return await f.harvest(snap)
+        return await f.harvest(snap, limit=WORK_CHUNK)
     if a == "clear":
-        return await f.clear_obstacles(snap, limit=int(arg.get("limit") or 8), min_energy=int(arg.get("min_energy") or 70))
+        return await f.clear_obstacles(snap, limit=min(WORK_CHUNK, int(arg.get("limit", 3))), min_energy=int(arg.get("min_energy", 70)))
     if a == "till_plant":
-        snap = await f.till(snap, limit=int(arg.get("limit") or 4))
-        return await f.plant(snap)
+        limit = min(WORK_CHUNK, int(arg.get("limit", 3)))
+        if not f.available_targets(snap, "plant", empty_tilled(snap)):
+            snap = await f.till(snap, limit=limit)
+        return await f.plant(snap, limit=limit)
     if a == "water":
-        return await f.water_crops(snap)
+        return await f.water_crops(snap, limit=WORK_CHUNK)
     if a == "chop":
-        return await f.chop_trees(snap, want_wood=100, max_swings=10)
+        return await f.chop_trees(snap, want_wood=100, max_swings=WORK_CHUNK)
     if a == "buy_seeds":
         from shop import buy_seeds
-        return await buy_seeds(b, f, snap, want=int(arg.get("qty") or 20))
+        return await buy_seeds(b, f, snap, want=int(arg.get("qty", 20)))
     if a == "sell":
         return await stash_items(b, snap)
     if a == "sleep":
@@ -541,17 +477,6 @@ async def run_action(b, f, snap, act):
     return snap
 
 
-async def rule_work(b, f, snap):
-    """模型没回话时的老规则。"""
-    snap = await f.clear_menu(snap)
-    snap = await f.go_outside(snap)
-    snap = await f.harvest(snap)
-    snap = await f.clear_obstacles(snap, limit=6, min_energy=70)
-    _seeds = seeds_in(snap)
-    if _seeds:
-        snap = await f.till(snap, limit=4)
-        snap = await f.plant(snap)
-    return await f.water_crops(snap)
 
 
 async def is_festival(b, snap):
@@ -650,313 +575,310 @@ async def festival_attend(b, f, snap, info):
     return snap
 
 
-async def run_once():
+def planning_text(snap, history=None):
+    """构造纯文本状态副本；后台线程不能读取Bridge或修改当前快照。"""
+    p = snap.get("player") or {}
+    es = ents(snap)
+    return json.dumps({
+        "date": snap.get("date"), "time": snap.get("time"), "location": snap.get("location"),
+        "energy": p.get("energy"), "money": p.get("money"),
+        "inventory": [{k: it.get(k) for k in ("name", "count", "tool", "water")}
+                      for it in snap.get("inventory") or []],
+        "ready": len(harvestable(snap)), "dry": len(water_targets(snap)),
+        "empty_tilled": len(empty_tilled(snap)),
+        "diggable_in_plot": sum(bool(e.get("diggable") and in_plot(e.get("tile"))) for e in es),
+        "obstacles": sum(e.get("name") in CLEAR_TOOLS for e in es),
+        "plot": "x60..69,y15..22；目标仅限当前观察范围",
+        "action_history": history.summary() if history is not None else {},
+    }, ensure_ascii=False)
+
+
+def action_ready(snap, act, plan, history=None):
+    """无论计划何时生成，派发前都用当前状态检查。"""
+    a, arg = act.get("action"), act.get("arg") or {}
+    p = snap.get("player") or {}
+    energy = float(p.get("energy") or 0)
+    t = int(snap.get("time") or 0)
+    def available(operation, targets):
+        return [e for e in targets if history is None or history.allowed(snap, operation, e)]
+    if a == "sleep":
+        return True
+    if snap.get("location") != "Farm":
+        return False
+    if a == "harvest":
+        return bool(available("harvest", harvestable(snap)))
+    if a == "water":
+        return energy >= 25 and bool(water_can(snap)) and bool(available("water", water_targets(snap)))
+    if a == "till_plant":
+        return energy >= 40 and int(arg.get("limit", 3)) > 0 and bool(seeds_in(snap)) and (
+            bool(available("plant", empty_tilled(snap))) or bool(tool_slot(snap, "Hoe")) and
+            any(e.get("diggable") and not e.get("tilled") and in_plot(e.get("tile"))
+                for e in available("till", ents(snap))))
+    if a == "clear":
+        return energy >= int(arg.get("min_energy", plan.get("clear_min_energy", 70))) and int(arg.get("limit", 3)) > 0 and any(
+            tool_slot(snap, CLEAR_TOOLS[e["name"]]) for e in available("clear", ents(snap)) if e.get("name") in CLEAR_TOOLS)
+    if a == "chop":
+        wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if i.get("name") == "木材")
+        return energy >= 70 and wood < 100 and bool(tool_slot(snap, "Axe")) and any(
+            e.get("name") in ("Tree", "树") for e in available("chop", ents(snap)))
+    if a == "buy_seeds":
+        d = snap.get("date") or {}
+        total = sum(i.get("count", 0) for i in seeds_in(snap))
+        return (900 <= t < 1600 and energy >= 40 and (p.get("money") or 0) >= 20
+                and total < plan.get("buy_when_below", 5) and plan.get("buy_qty", 20) > 0
+                and int(arg.get("qty", 20)) > 0 and BOUGHT_DAY[0] != context_key(snap)
+                and (d.get("season"), d.get("day")) not in FESTIVALS)
+    if a == "sell":
+        return any((it.get("count") or 0) > 0 and it.get("name") not in KEEP_NAMES
+                   and not it.get("tool") and it.get("name") not in ("木材", "硬木")
+                   and "种子" not in (it.get("name") or "")
+                   and "Seeds" not in (it.get("name") or "") for it in snap.get("inventory") or [])
+    return False
+
+
+def local_action(snap, brain):
+    """模型未返回也能做事；仅挑当前可执行且不在失败冷却中的技能。"""
+    plan = brain.daily
+    candidates = [
+        {"action": "harvest", "arg": {}, "reason": "本地策略：收成熟作物"},
+        {"action": "water", "arg": {}, "reason": "本地策略：照料缺水地块"},
+        {"action": "till_plant", "arg": {"limit": WORK_CHUNK}, "reason": "本地策略：使用现有种子"},
+        {"action": "buy_seeds", "arg": {"qty": plan.get("buy_qty", 20)}, "reason": "本地策略：按预算补货"},
+        {"action": "clear", "arg": {"limit": plan.get("clear_limit", 3),
+                                     "min_energy": plan.get("clear_min_energy", 70)},
+         "reason": "本地策略：按体力预算清障"},
+    ]
+    if plan.get("chop"):
+        candidates.append({"action": "chop", "arg": {}, "reason": "本地策略：按计划攒木材"})
+    candidates.append({"action": "sell", "arg": {}, "reason": "本地策略：整理背包"})
+    used = sum((i.get("count") or 0) > 0 for i in snap.get("inventory") or [])
+    if used >= int((snap.get("player") or {}).get("maxItems") or 12) - 1:
+        candidates.insert(0, {"action": "sell", "arg": {}, "reason": "本地策略：背包将满，先腾空间"})
+    for action in candidates:
+        if brain.allowed(action["action"]) and action_ready(snap, action, plan, brain.history):
+            action["source"] = "local"
+            return action
+    # 体力不足且已无可做农务时恢复到下一天，而非在原地重复空操作。
+    if float((snap.get("player") or {}).get("energy") or 0) < 40 and brain.allowed("sleep"):
+        return {"action": "sleep", "arg": {}, "reason": "本地策略：体力不足，恢复后继续", "source": "local"}
+    return None
+
+
+def made_progress(before, after):
+    """比较资源及共同观察格；视野变了不能单独算有效劳动。"""
+    def resources(snap):
+        p = snap.get("player") or {}
+        inventory = [{k: i.get(k) for k in ("slot", "itemId", "name", "count")}
+                     for i in snap.get("inventory") or []]
+        return json.dumps([snap.get("date"), p.get("money"), inventory], sort_keys=True)
+    if resources(before) != resources(after):
+        return True
+    def tiles(snap):
+        return {(e["tile"].get("x"), e["tile"].get("y")):
+                tuple(e.get(k) for k in ("kind", "name", "crop", "watered", "tilled", "cropPhase", "cropDead"))
+                for e in ents(snap) if e.get("tile") and e.get("kind") != "npc"}
+    old, new = tiles(before), tiles(after)
+    return any(old[t] != new[t] for t in old.keys() & new.keys())
+
+
+async def run_once(brain=None):
+    owned = brain is None
+    brain = brain or WorkPlanner(planner.plan_work, log, queue_report,
+                                history_path=os.path.join(DEV, "action-history.json"))
+    try:
+        return await _run_once(brain)
+    finally:
+        if owned:
+            brain.close()
+
+
+async def _run_once(brain):
+    """每轮只执行一个短技能；规划器在多轮间保留队列和唯一HTTP请求。"""
     ensure_dirs()
     if stop_requested():
-        log("发现 STOP，退出")
         return False
-
-    # 先处理「开游戏」：这时候桥可能还没起来
-    packs = take_commands()
-    for _p, _c in packs:
-        if (_c.get("cmd") or "").lower() == "play":
-            try:
-                from launch_farm import ensure_loaded
-                _ok = await ensure_loaded()
-            except Exception as _e:  # noqa: BLE001
-                log("开游戏出错：%s" % _e)
-                _ok = False
-            log("开游戏：%s" % ("成功" if _ok else "失败"))
-            queue_report("星露谷开好了：" + ("进存档了" if _ok else "没进去，我再试试"))
-            try:
-                os.remove(_p)
-            except Exception:
-                pass
+    global STARTED_AT, PLAN, PLAN_DAY, PLAN_REASON
+    for path, cmd in take_commands():
+        if (cmd.get("cmd") or "").lower() == "play":
+            from launch_farm import ensure_loaded
+            ok = await ensure_loaded()
+            queue_report("星露谷开好了：" + ("进存档了" if ok else "没进去"))
+            os.remove(path)
 
     b = Bridge()
     try:
         await b.__aenter__()
-    except Exception as e:  # noqa: BLE001
-        log("连不上游戏桥：%s" % e)
-        return True
-
-    # 跑太久就把 mod 的动作记录清零（等价于重启，但不用真重启）
-    global STARTED_AT
-    if _reset_h > 0 and (time.time() - STARTED_AT) > _reset_h * 3600:
-        try:
-            await b.reset()
-            ran = (time.time() - STARTED_AT) / 3600
-            STARTED_AT = time.time()
-            log("动作记录已清零（已连续跑 %0.1f 小时），避免 OUTPUT_LIMIT" % ran)
-        except Exception as _e:  # noqa: BLE001
-            log("清零动作记录失败：%s" % _e)
-
+    except Exception as exc:
+        log("连不上游戏桥：%s" % exc)
+        return False
     try:
-        f = Farmer(b, state_path=os.path.join(DEV, "farm-state.json"), log=log)
+        if _reset_h > 0 and time.time() - STARTED_AT > _reset_h * 3600:
+            await b.reset()
+            STARTED_AT = time.time()
+            brain.interrupt()
+            log("动作记录已清零，继续工作")
+        f = Farmer(b, state_path=os.path.join(DEV, "farm-state.json"), log=log, history=brain.history)
         try:
             snap = await f.snap(16)
-        except Exception as _e:
-            log("读快照失败（%s），点一下屏幕试试" % _e)
-            try:
-                from farmer import click_game_center
-                for _i in range(3):
-                    click_game_center()
-                    await asyncio.sleep(1.5)
-            except Exception:
-                pass
+        except Exception as exc:
+            log("读快照失败（%s），尝试恢复过场界面" % type(exc).__name__)
+            from farmer import click_game_center
+            for _ in range(3):
+                if stop_requested():
+                    return False
+                click_game_center()
+                await asyncio.sleep(1.5)
             snap = await f.snap(16)
         if not snap or snap.get("ok") is False:
-            log("没有存档 / 桥未就绪：%s" % (snap or {}).get("reason"))
-            return True
-
+            return False
         remember(snap)
-        stats = {"watered": 0, "harvested": 0}
-        cmds = take_commands()
+        brain.observe(snap)
+        # 先接收新控制意图，再轮询旧结果，防止旧计划抢先执行。
         do_sleep = False
-        for path, cmd in cmds:
+        for path, cmd in take_commands():
             c = (cmd.get("cmd") or "").lower()
-            log("收到指令：%s %s" % (c, cmd.get("arg") or ""))
             try:
                 if c == "status":
-                    await queue_status(f, snap)
-                elif c in ("water", "work"):
-                    snap = await f.clear_menu(snap)
-                    snap = await f.go_outside(snap)
-                    stats_w = await count_watered(f, snap)
-                    stats["watered"] += stats_w
-                    snap = await f.snap(16)
-                    _can = water_can(snap) or {}
-                    queue_report("浇完了：%d 格，水壶剩 %s" % (stats_w, _can.get("water")))
-                elif c == "sleep":
-                    do_sleep = True
-                elif c == "task":
-                    _t = cmd.get("arg") or ""
-                    log("收到任务：%s" % _t)
-                    _st = await state_text(b, snap)
-                    _plan = await asyncio.to_thread(planner.plan_task, _t, _st)
-                    if not _plan:
-                        queue_report("任务没想明白，先不动：%s" % _t)
-                    else:
-                        _done = []
-                        for _s in (_plan.get("steps") or [])[:6]:
-                            try:
-                                snap = await run_action(b, f, snap, _s)
-                                _done.append("%s %s" % (_s.get("action"), _s.get("arg") or ""))
-                            except Exception as _e:  # noqa: BLE001
-                                _done.append("%s 失败(%s)" % (_s.get("action"), _e))
-                        _reply = _plan.get("reply") or ""
-                        queue_report("任务「%s」完成 %d 步：%s。%s" % (_t, len(_done), "；".join(_done), _reply))
-                        log("任务结果：%s" % _done)
+                    queue_report("现在的情况：" + summary_text(snap, {}))
                 elif c == "decisions":
                     queue_report(last_decisions(5))
+                elif c in ("water", "work"):
+                    brain.set_steps([{"action": "water"}], mission="浇水")
+                    queue_report("浇水已接入执行队列")
+                elif c == "task":
+                    text = str(cmd.get("arg") or "").strip()
+                    if text:
+                        brain.submit_task(text)
+                        queue_report("已收到任务「%s」，后台规划期间继续农务" % text)
+                elif c == "sleep":
+                    brain.interrupt()
+                    do_sleep = True
                 elif c == "reset":
                     await b.reset()
                     STARTED_AT = time.time()
+                    brain.interrupt()
                     queue_report("动作记录已清零，接着干")
                 elif c == "backup":
                     backup_saves()
-            except Exception as e:  # noqa: BLE001
-                log("指令 %s 出错：%s" % (c, e))
+            except Exception as exc:
+                log("指令 %s 出错：%s" % (c, exc))
             finally:
                 try:
                     os.remove(path)
-                except Exception:
+                except OSError:
                     pass
 
-        # 每天问一次模型：今天怎么安排
-        global PLAN, PLAN_DAY, PLAN_REASON
-        _day = (snap.get("date") or {}).get("day")
-        if _day != PLAN_DAY:
-            try:
-                PLAN = await refresh_plan(b, f, snap) or {}
-                PLAN_DAY = _day
-                PLAN_REASON = str(PLAN.get("reason") or "")
-                log("今日计划：%s（%s）" % (PLAN, PLAN_REASON))
-            except Exception as _e:  # noqa: BLE001
-                log("出计划失败：%s" % _e)
-                PLAN, PLAN_DAY = {}, _day
-
-        t = int(snap.get("time") or 0)
-        _sleep_at = int(PLAN.get("sleep_at") or 2200)
-        if do_sleep or t >= _sleep_at:
-            before = (snap.get("date") or {}).get("day")
-            log("回屋睡觉（%s 点）" % t)
-            snap2 = await f.sleep(snap)
-            after = ((snap2 or {}).get("date") or {}).get("day")
-            if snap2 and after != before:
-                backup_saves()
-                try:
-                    _md = await b.request("menudump", {})
-                    _money = _md.get("money")
-                except Exception:
-                    _money = None
-                _report = build_report(before, snap2, _money)
-                try:
-                    _rd = os.path.join(DEV, "reports")
-                    os.makedirs(_rd, exist_ok=True)
-                    with open(os.path.join(_rd, "day-%s.txt" % before), "w", encoding="utf-8") as _rf:
-                        _rf.write(_report)
-                except Exception:
-                    pass
-                queue_report(_report)
-                log("新的一天：第 %s 天" % after)
+        brain.poll(snap, planning_text(snap, brain.history))
+        PLAN, PLAN_DAY = dict(brain.daily), context_key(snap)
+        PLAN_REASON = str(PLAN.get("reason") or "")
+        if stop_requested():
+            return False
+        # 玩家指令、体力和就寝时间无需等模型判断。
+        energy = float((snap.get("player") or {}).get("energy") or 0)
+        must_sleep = do_sleep or int(snap.get("time") or 0) >= PLAN["sleep_at"] or energy <= 20
+        if must_sleep and brain.allowed("sleep"):
+            act = {"action": "sleep", "arg": {}, "reason": "玩家指令、就寝时间或低体力", "source": "local"}
         else:
-            _used = sum(1 for i in snap.get("inventory") or [] if (i.get("count") or 0) > 0)
-            if _used >= 30:
-                log("背包快满了（%d/36），先整理" % _used)
-                snap = await stash_items(b, snap)
-            # 卡在奇怪的地图（节日/公交/临时图）就直接传送
-            if (snap.get("location") or "") not in ("Farm", "FarmHouse", "Forest", "Town", "SeedShop"):
-                log("卡在 %s，传送回农场" % snap.get("location"))
-                try:
-                    await b.request("warp", {"location": "Farm", "x": 64, "y": 15})
-                    await asyncio.sleep(2.0)
-                    snap = await b.snapshot(16)
-                except Exception as _e:
-                    log("传送失败：%s" % _e)
-            # 不在农场就先回家
-            if (snap.get("location") or "") not in ("Farm", "FarmHouse"):
-                try:
-                    from shop import _go_home
-                    snap = await _go_home(b, f, snap)
-                    log("先回了趟家：%s" % snap.get("location"))
-                except Exception as _e:  # noqa: BLE001
-                    log("回家出错：%s" % _e)
-            # 种子不够就去买
-            _total = sum(s.get("count", 0) for s in seeds_in(snap))
-            _below = int(PLAN.get("buy_when_below") or 5)
-            _want = int(PLAN.get("buy_qty") or 20)
-            if _total < _below and (snap.get("location") or "") == "Farm":
-                try:
-                    from shop import buy_seeds
-                    snap = await buy_seeds(b, f, snap, want=_want)
-                    log("买完回来，种子 %d" % sum(s.get("count", 0) for s in seeds_in(snap)))
-                except Exception as _e:  # noqa: BLE001
-                    log("买种子出错：%s" % _e)
             snap = await f.clear_menu(snap)
-            snap = await f.go_outside(snap)
-            snap = await f.harvest(snap)
-            stats["harvested"] += f.last_harvest
-            snap = await f.clear_obstacles(snap, limit=int(PLAN.get("clear_limit") or 8), min_energy=int(PLAN.get("clear_min_energy") or 70))
-            _wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if (i.get("name") or "") == "木材")
-            if PLAN.get("chop") and _wood < 100:
-                snap = await f.chop_trees(snap, want_wood=100, max_swings=12)
-            if not LOOT_DONE[0]:
-                log("开局：先回屋翻包裹")
-                try:
-                    if (snap.get("location") or "") != "FarmHouse":
-                        log("  人不在屋里，先走回屋")
-                        snap = await f.go_inside(snap)
-                    snap = await f.loot_container(snap)
-                    log("  翻完背包里的种子：%s" % (seed_names(snap),))
-                except Exception as _e:
-                    log("  翻包裹出错：%s" % _e)
-                LOOT_DONE[0] = True
-            _seeds = seeds_in(snap)
-            _d = snap.get("date") or {}
-            _today = (_d.get("season") or "") + str(_d.get("day") or "")
-            if BOUGHT_DAY[0] != _today:
-                BOUGHT_DAY[0] = None
-            if not _seeds:
-                # 先翻箱子找种子（开局包裹就在家里的箱子里）
-                for e in snap.get("entities") or []:
-                    if e.get("kind") == "object" and (e.get("objType") or "") == "Chest":
-                        log("先翻箱子找种子：%s" % (e.get("tile"),))
-                        mv = await f.do("走到箱子旁", b.move(near=e["ref"]))
-                        if mv is not None or f.dry:
-                            snap = await f.chest_get(snap, e["tile"], "种子")
-                            if seeds_in(snap):
-                                break
-            if _seeds:
-                _n = sum(s.get("count", 0) for s in _seeds)
-                snap = await f.till(snap, limit=min(8, _n))
-                snap = await f.plant(snap)
-            snap = await f.water_crops(snap)
-            stats["watered"] += f.last_watered
-            # 每轮让模型挑一个动作
-            _dnow = snap.get("date") or {}
-            _dkey = str(_dnow.get("day") or "")
-            if REPORT_DAY[0] and _dkey and _dkey != REPORT_DAY[0]:
-                try:
-                    _rep = build_report(REPORT_DAY[0], snap, (snap.get("player") or {}).get("money"))
-                    queue_report(_rep)
-                    log("跨天，日报已排队（%s）" % REPORT_DAY[0])
-                except Exception as _e:
-                    log("日报生成失败：%s" % _e)
-            if _dkey:
-                REPORT_DAY[0] = _dkey
-            fest = await is_festival(b, snap)
-            energy = int((snap.get("player") or {}).get("energy") or 0)
-            f._energy_low = energy <= 20
-            if energy <= 12 or getattr(f, "no_stamina", False):
-                log("体力见底（%d），今天提前收工睡觉" % energy)
-                try:
-                    snap = await f.sleep(snap)
-                    f.no_stamina = False
-                    return
-                except Exception as _e:  # noqa: BLE001
-                    log("睡觉失败：%s" % _e)
             info = festival_today(snap)
-            d0 = snap.get("date") or {}
-            day_key = (d0.get("season") or "") + str(d0.get("day") or "")
-            tnow = int(snap.get("time") or 0)
-            if info and day_key not in ATTENDED and info["start"] <= tnow < info["end"]:
-                try:
-                    snap = await asyncio.wait_for(festival_attend(b, f, snap, info), timeout=480)
-                except asyncio.TimeoutError:
-                    log("  节日流程超时，放弃并回农场")
-                    ATTENDED.add(day_key)
-                act = None
-            else:
-                act = await decide_next(b, f, snap)
-            if act and (act.get("action") or "").startswith("buy"):
-                _d2 = snap.get("date") or {}
-                _td = (_d2.get("season") or "") + str(_d2.get("day") or "")
-                _t = int(snap.get("time") or 0)
-                if seeds_in(snap):
-                    log("背包里还有种子，不用去店里")
-                    act = None
-                elif _t >= 1600:
-                    log("已经 %d 点，店里快关门了，不去了" % _t)
-                    act = None
-                elif BOUGHT_DAY[0] == _td:
-                    log("今天已经买过一次，不再去店里")
-                    act = None
-                else:
-                    BOUGHT_DAY[0] = _td
-            if fest and act and (act.get("action") or "").startswith("buy"):
-                log("今天是节日，镇上全是活动，先不去买种子")
-                act = {"action": "water", "arg": {}, "reason": "节日不去镇上"}
-            if act:
-                log("模型决定：%s %s（%s）" % (act.get("action"), act.get("arg") or "", act.get("reason") or ""))
-                try:
-                    write_status(snap, None, act.get("action"))
-                except Exception:
-                    pass
-                record_decision(act, snap)
-                try:
-                    snap = await run_action(b, f, snap, act)
-                except Exception as _e:  # noqa: BLE001
-                    log("执行 %s 出错：%s" % (act.get("action"), _e))
-            else:
-                # 模型没回话就走老规则
-                snap = await rule_work(b, f, snap)
-            await ensure_chest(b, snap)
-            snap = await stash_items(b, snap)
-            _d = (snap.get("date") or {}).get("day")
-            if DAY_STATS.get("day") != _d:
-                DAY_STATS.update({"day": _d, "watered": 0, "harvested": 0, "planted": 0})
-            DAY_STATS["watered"] += f.last_watered
-            DAY_STATS["harvested"] += f.last_harvest
-            DAY_STATS["planted"] += f.last_planted
-            if f.last_harvest or f.last_cleared or f.last_till or f.last_planted or f.last_watered:
-                log("这轮：收 %d，清 %d，翻 %d，种 %d，浇 %d，种子 %d" % (f.last_harvest, f.last_cleared, f.last_till, f.last_planted, f.last_watered, sum(s.get("count", 0) for s in seeds_in(snap))))
-    finally:
+            day_key = str(context_key(snap))
+            if info and day_key not in ATTENDED and info["start"] <= int(snap.get("time") or 0) < info["end"]:
+                snap = await asyncio.wait_for(festival_attend(b, f, snap, info), timeout=480)
+                ATTENDED.add(day_key)
+                remember(snap)
+                return True
+            if snap.get("location") not in ("Farm", "FarmHouse"):
+                if snap.get("location") not in ("Forest", "Town", "SeedShop"):
+                    # 保留原有异常地图回农场的恢复策略。
+                    await b.request("warp", {"location": "Farm", "x": 64, "y": 15})
+                    await asyncio.sleep(2)
+                    snap = await f.snap(16)
+                from shop import _go_home
+                snap = await _go_home(b, f, snap)
+            if snap.get("location") == "FarmHouse":
+                if not LOOT_DONE[0] and not seeds_in(snap):
+                    snap = await f.loot_container(snap)
+                    LOOT_DONE[0] = True
+                snap = await f.go_outside(snap)
+            if not LOOT_DONE[0]:
+                LOOT_DONE[0] = True
+                if not seeds_in(snap):
+                    snap = await f.go_inside(snap)
+                    snap = await f.loot_container(snap)
+                    snap = await f.go_outside(snap)
+            if stop_requested():
+                return False
+            # 新快照可能跨日或已经完成旧目标，再轮询并检查计划。
+            brain.poll(snap, planning_text(snap, brain.history))
+            PLAN = dict(brain.daily)
+            ready = lambda a: action_ready(snap, a, PLAN, brain.history)
+            act = brain.take_action(ready)
+            if act is None:
+                act = local_action(snap, brain)
+        if not act:
+            remember(snap)
+            write_status(snap, (snap.get("player") or {}).get("money"), "等待可执行任务（后台规划中）" if brain.thinking else "暂无可执行任务", brain)
+            return False
+        if stop_requested():
+            return False
+
+        before = snap
+        name = act["action"]
+        log("%s：%s %s（%s）" % ("计划执行" if act.get("source") == "model" else "本地执行",
+                                  name, act.get("arg") or {}, act.get("reason") or ""))
+        record_decision(act, before)
+        write_status(before, (before.get("player") or {}).get("money"), name, brain)
         try:
-            await b.__aexit__(None, None, None)
-        except Exception:
-            pass
-    return True
+            snap = await run_action(b, f, snap, act) or await f.snap(16)
+        except Exception as exc:
+            brain.complete(act, False)
+            log("执行 %s 受阻：%s" % (name, exc))
+            return False
+        # 统一取新范围，下一段只使用当前引用。
+        snap = await f.snap(16)
+        counts = {"water": f.last_watered, "harvest": f.last_harvest,
+                  "till_plant": max(f.last_till, f.last_planted),
+                  "clear": f.last_cleared, "chop": f.last_chops}
+        progress = counts[name] > 0 if name in counts else made_progress(before, snap)
+        repeat = False
+        if name in ("water", "harvest", "chop"):
+            repeat = action_ready(snap, act, PLAN, brain.history)
+        elif name in ("clear", "till_plant"):
+            done = f.last_cleared if name == "clear" else max(f.last_till, f.last_planted)
+            remaining = max(0, int((act.get("arg") or {}).get("limit", 3)) - done)
+            if remaining:
+                act = dict(act, arg=dict(act.get("arg") or {}, limit=remaining))
+                repeat = action_ready(snap, act, PLAN, brain.history)
+        brain.complete(act, progress, repeat=repeat and act.get("source") == "model",
+                       retry_other=name in counts and repeat)
+        if name == "buy_seeds" and sum(i.get("count", 0) for i in seeds_in(snap)) > sum(i.get("count", 0) for i in seeds_in(before)):
+            BOUGHT_DAY[0] = context_key(snap)
+        if context_key(before) != context_key(snap):
+            backup_saves()
+            report = build_report((before.get("date") or {}).get("day"), snap,
+                                  (snap.get("player") or {}).get("money"))
+            report_dir = os.path.join(DEV, "reports")
+            os.makedirs(report_dir, exist_ok=True)
+            date = before.get("date") or {}
+            filename = "day-%s-%s-%s.txt" % (date.get("year"), date.get("season"), date.get("day"))
+            with open(os.path.join(report_dir, filename), "w", encoding="utf-8") as fh:
+                fh.write(report)
+            queue_report(report)
+        if snap.get("location") == "Farm" and brain.allowed("chest"):
+            # 建箱子也要避免每个短技能结束都重复创建。
+            await ensure_chest(b, snap)
+            brain.cool_down("chest", 120)
+        remember(snap)
+        write_status(snap, (snap.get("player") or {}).get("money"), name, brain)
+        day = context_key(snap)
+        if DAY_STATS.get("day") != day:
+            DAY_STATS.update(day=day, watered=0, harvested=0, planted=0)
+        DAY_STATS["watered"] += f.last_watered
+        DAY_STATS["harvested"] += f.last_harvest
+        DAY_STATS["planted"] += f.last_planted
+        return progress
+    finally:
+        await b.__aexit__(None, None, None)
 
 
 async def queue_status(f, snap):
@@ -972,6 +894,9 @@ KEEP_NAMES = ("斧头", "锄头", "喷壶", "十字镐", "镰刀")
 async def ensure_chest(b, snap):
     """没箱子就造一个放在农舍旁边。"""
     if (snap.get("location") or "") != "Farm":
+        return
+    if any(e.get("objType") == "Chest" and (e.get("tile") or {}).get("x") in (CHEST_X - 1, CHEST_X)
+           and (e.get("tile") or {}).get("y") in (CHEST_Y, CHEST_Y + 1) for e in ents(snap)):
         return
     wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if (i.get("name") or "") == "木材")
     if wood < 50:
@@ -992,7 +917,7 @@ async def stash_items(b, snap):
         return snap
     for it in list(snap.get("inventory") or []):
         nm = it.get("name") or ""
-        if nm in KEEP_NAMES or "种子" in nm or nm in ("木材", "硬木"):
+        if it.get("tool") or nm in KEEP_NAMES or "种子" in nm or "Seeds" in nm or nm in ("木材", "硬木"):
             continue
         if (it.get("count") or 0) <= 0:
             continue
@@ -1020,28 +945,35 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--loop", action="store_true")
-    a = ap.parse_args()
+    args = ap.parse_args()
     ensure_dirs()
-    if a.once or not a.loop:
-        ok = await run_once()
-        return 0 if ok else 1
-
-    log("农场服务启动")
-    pump = asyncio.create_task(pump_loop())
-    while not stop_requested():
-        try:
-            await run_once()
-        except Exception as e:  # noqa: BLE001
-            log("这轮出错：%s" % e)
-        # 分段睡，这样 STOP 文件能被及时发现
-        for _ in range(6):
-            if stop_requested():
-                break
-            await asyncio.sleep(5)
+    brain = WorkPlanner(planner.plan_work, log, queue_report,
+                        history_path=os.path.join(DEV, "action-history.json"))
+    pump = None
     try:
-        pump.cancel()
-    except Exception:
-        pass
+        if args.once or not args.loop:
+            await run_once(brain)
+            return 0
+        log("农场服务启动：后台规划，连续执行")
+        pump = asyncio.create_task(pump_loop())
+        while not stop_requested():
+            try:
+                progressed = await run_once(brain)
+                delay = 0.1 if progressed else 2.0
+            except Exception as exc:
+                log("这轮出错：%s" % exc)
+                delay = 5.0
+            # 有工作只短暂让出事件循环；空闲/断线时退避，避免空转。
+            if not stop_requested():
+                await asyncio.sleep(delay)
+    finally:
+        brain.close()
+        if pump:
+            pump.cancel()
+            try:
+                await pump
+            except asyncio.CancelledError:
+                pass
     log("农场服务退出")
     return 0
 

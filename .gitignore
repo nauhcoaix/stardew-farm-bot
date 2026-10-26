@@ -31,6 +31,8 @@ snap*.json
 status.json
 decisions.jsonl
 farm-state.json
+action-history.json
+action-history.json.tmp
 _svc-*.txt
 svc-*.txt
 *.bak-*
@@ -38,6 +40,8 @@ svc-*.txt
 inbox/
 outbox/
 backups/
+reports/
+STOP
 
 # 密钥（必须）
 planner-config.json

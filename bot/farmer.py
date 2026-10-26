@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from action_history import ActionHistory, target_progress
 from ctypes import wintypes
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -374,10 +375,12 @@ def water_sources(snap):
 
 
 class Farmer:
-    def __init__(self, bridge, dry=False, log=print, state_path=None):
+    def __init__(self, bridge, dry=False, log=print, state_path=None, history=None):
         self.b = bridge
         self.dry = dry
         self.log = log
+        self.history = history if history is not None else ActionHistory(log=log)
+        self.last_error = ""
         self.min_energy = 25
         self.last_harvest = 0
         self.last_till = 0
@@ -526,6 +529,7 @@ class Farmer:
         return snap
 
     async def do(self, what, coro):
+        self.last_error = ""
         # 体力见底：所有后续动作直接放弃，别再刷日志
         if getattr(self, "no_stamina", False) or getattr(self, "_energy_low", False):
             self.log("  [跳过] %s：没体力了" % what)
@@ -543,11 +547,66 @@ class Farmer:
             return None
         try:
             r = await coro
+            if isinstance(r, dict) and r.get("ok") is False:
+                raise RuntimeError(str(r.get("error") or r.get("detail") or "动作返回失败"))
             self.log("  %s -> %s" % (what, (r or {}).get("detail") or "ok"))
             return r
         except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
             self.log("  %s 失败：%s" % (what, e))
             return None
+
+    def available_targets(self, snap, action, targets):
+        return [e for e in targets if self.history.allowed(snap, action, e)]
+
+    async def work_target(self, snap, action, entity, slot=None):
+        """一次目标动作：移动后更新ref，检查实际结果，失败记忆跨技能轮次保留。"""
+        if not self.history.allowed(snap, action, entity):
+            return snap, False
+        if self.dry:
+            self.log("  [dry] %s %s" % (action, entity.get("tile")))
+            return snap, False
+        before = snap
+        current = next((e for e in ents(snap) if e.get("tile") == entity.get("tile")
+                        and e.get("kind") == entity.get("kind")
+                        and e.get("name") == entity.get("name")), None)
+        if not current:
+            return snap, False
+        moved = await self.do("走到 %s" % entity.get("tile"), self.b.move(near=current["ref"]))
+        error = self.last_error
+        snap = (moved or {}).get("snapshot") or await self.snap(16)
+        if not moved:
+            self.history.record(before, snap, action, entity, False, error or "移动未完成")
+            return snap, False
+        # 每次观察的ref都可能更换；按物理目标重新绑定，不复用计划里的旧ref。
+        current = next((e for e in ents(snap) if e.get("tile") == entity.get("tile")
+                        and e.get("kind") == entity.get("kind")
+                        and e.get("name") == entity.get("name")), None)
+        if snap.get("location") != before.get("location") or not current:
+            self.history.record(before, snap, action, entity, False, "目标已离开当前观察范围")
+            return snap, False
+        if slot is not None:
+            selected = await self.do("选择工具/种子", self.b.select(slot))
+            if not selected:
+                error = self.last_error
+                self.history.record(before, snap, action, entity, False, error or "选择工具失败")
+                return snap, False
+            # select 返回的新快照也会使ref更新。
+            snap = selected.get("snapshot") or await self.snap(16)
+            current = next((e for e in ents(snap) if e.get("tile") == entity.get("tile")
+                            and e.get("kind") == entity.get("kind")
+                            and e.get("name") == entity.get("name")), None)
+            if not current:
+                self.history.record(before, snap, action, entity, False, "目标已改变")
+                return snap, False
+        before = snap
+        command = self.b.interact if action == "harvest" else self.b.use
+        result = await self.do("%s %s" % (action, entity.get("tile")), command(current["ref"]))
+        error = self.last_error
+        snap = (result or {}).get("snapshot") or await self.snap(16)
+        progress = target_progress(action, before, snap, entity, verified=bool(result))
+        self.history.record(before, snap, action, entity, progress, error)
+        return snap, progress
 
     async def refill_if_needed(self, snap, force=False):
         can = water_can(snap)
@@ -610,8 +669,10 @@ class Farmer:
                 return srcs
         return []
 
-    async def water_crops(self, snap):
-        targets = water_targets(snap)
+    async def water_crops(self, snap, limit=None):
+        targets = self.available_targets(snap, "water", water_targets(snap))
+        if limit is not None:
+            targets = targets[:max(0, limit)]
         self.log("  需要浇水：%d 格" % len(targets))
         done = 0
         for e in targets:
@@ -624,39 +685,34 @@ class Farmer:
                 if (can.get("water") or 0) <= 0:
                     self.log("  没水了，停止浇水")
                     break
-            mv = await self.do("走到 %s" % (e.get("tile"),), self.b.move(near=e["ref"]))
-            if not self.dry and not mv:
-                continue
-            await self.do("选水壶", self.b.select(can["slot"]))
-            r = await self.do("浇水 %s" % (e.get("tile"),), self.b.use(e["ref"]))
-            if r:
+            snap, progress = await self.work_target(snap, "water", e, can["slot"])
+            if progress:
                 done += 1
-                snap = r.get("snapshot") or snap
         self.last_watered = done
         self.log("  实际浇水：%d 格" % done)
         return snap
 
-    async def harvest(self, snap):
-        # 成熟的作物在快照里没有 ready 字段，统一用 interact 试一遍：能收就会掉进背包
+    async def harvest(self, snap, limit=None):
+        # 只收快照确认成熟且不在失败历史中的作物。
         crops = [e for e in ents(snap) if e.get("crop")]
-        targets = [e for e in crops if e.get("harvestable", True)]
+        targets = self.available_targets(snap, "harvest", harvestable(snap))
+        if limit is not None:
+            targets = targets[:max(0, limit)]
         self.log("  作物 %d 格，其中成熟 %d 格" % (len(crops), len(targets)))
         got = 0
         for e in targets:
-            mv = await self.do("走到 %s" % (e.get("tile"),), self.b.move(near=e["ref"]))
-            if not self.dry and not mv:
-                continue
-            r = await self.do("收 %s" % (e.get("tile"),), self.b.interact(e["ref"]))
-            if r:
+            snap, progress = await self.work_target(snap, "harvest", e)
+            if progress:
                 got += 1
-                snap = r.get("snapshot") or snap
         self.last_harvest = got
         self.log("  实际收了：%d" % got)
         return snap
 
-    async def plant(self, snap):
+    async def plant(self, snap, limit=None):
         seeds = seeds_in(snap)
-        plots = empty_tilled(snap)
+        plots = self.available_targets(snap, "plant", empty_tilled(snap))
+        if limit is not None:
+            plots = plots[:max(0, limit)]
         if not seeds:
             self.log("  背包里没有种子，跳过种植")
             return snap
@@ -669,14 +725,9 @@ class Farmer:
             seeds = seeds_in(snap)
             if not seeds:
                 break
-            mv = await self.do("走到 %s" % (e.get("tile"),), self.b.move(near=e["ref"]))
-            if not self.dry and not mv:
-                continue
-            await self.do("选种子", self.b.select(seeds[0]["slot"]))
-            r = await self.do("种 %s" % (e.get("tile"),), self.b.use(e["ref"]))
-            if r:
+            snap, progress = await self.work_target(snap, "plant", e, seeds[0]["slot"])
+            if progress:
                 planted += 1
-                snap = r.get("snapshot") or snap
         self.last_planted = planted
         self.log("  实际种了：%d" % planted)
         return snap
@@ -732,7 +783,8 @@ class Farmer:
         px, py = pos.get("x", 0), pos.get("y", 0)
         cands = []
         for e in ents(snap):
-            if not e.get("diggable") or not in_plot(e.get("tile")):
+            if (not e.get("diggable") or e.get("tilled") or not in_plot(e.get("tile"))
+                    or not self.history.allowed(snap, "till", e)):
                 continue
             t = e.get("tile") or {}
             cands.append((abs(t.get("x", 0) - px) + abs(t.get("y", 0) - py), e))
@@ -744,14 +796,9 @@ class Farmer:
         self.log("  要翻的地：%d 格（最近 %s）" % (len(tiles), tiles[0].get("tile")))
         done = 0
         for e in tiles:
-            mv = await self.do("走到 %s" % (e.get("tile"),), self.b.move(near=e["ref"]))
-            if not self.dry and not mv:
-                continue
-            await self.do("选锄头", self.b.select(hoe["slot"]))
-            r = await self.do("锄 %s" % (e.get("tile"),), self.b.use(e["ref"]))
-            if r:
+            snap, progress = await self.work_target(snap, "till", e, hoe["slot"])
+            if progress:
                 done += 1
-                snap = r.get("snapshot") or snap
         self.last_till = done
         self.log("  实际翻地：%d" % done)
         return snap
@@ -770,7 +817,7 @@ class Farmer:
         for e in ents(snap):
             nm = e.get("name") or ""
             tool = CLEAR_TOOLS.get(nm)
-            if not tool:
+            if not tool or not self.history.allowed(snap, "clear", e):
                 continue
             t = e.get("tile") or {}
             cands.append((order.get(nm, 9), abs(t.get("x", 0) - px) + abs(t.get("y", 0) - py), e, tool))
@@ -788,14 +835,9 @@ class Farmer:
             if not it:
                 self.log("  背包里没有 %s（杂草只能镰刀割）" % tool)
                 continue
-            mv = await self.do("走到 %s" % (e.get("tile"),), self.b.move(near=e["ref"]))
-            if not self.dry and not mv:
-                continue
-            await self.do("选 %s" % (it.get("name"),), self.b.select(it["slot"]))
-            r = await self.do("清 %s %s" % (e.get("name"), e.get("tile")), self.b.use(e["ref"]))
-            if r:
+            snap, progress = await self.work_target(snap, "clear", e, it["slot"])
+            if progress:
                 done += 1
-                snap = r.get("snapshot") or snap
         self.last_cleared = done
         # 清杂草偶尔掉混合种子，记一下多了什么
         for it in seeds_in(snap):
@@ -942,7 +984,6 @@ class Farmer:
             return snap
         self.last_chops = 0
         target_tile = None
-        misses = 0
         for _ in range(max_swings):
             wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if (i.get("name") or "") in ("木材", "木头"))
             if wood >= want_wood:
@@ -951,7 +992,8 @@ class Farmer:
             if ((snap.get("player") or {}).get("energy") or 0) < 30:
                 self.log("  体力不够了")
                 break
-            trees = [e for e in ents(snap) if (e.get("name") or "") in ("Tree", "树")]
+            trees = self.available_targets(snap, "chop", [e for e in ents(snap)
+                                                          if (e.get("name") or "") in ("Tree", "树")])
             if not trees:
                 self.log("  附近没树了")
                 break
@@ -967,21 +1009,11 @@ class Farmer:
                 trees.sort(key=lambda e: abs((e.get("tile") or {}).get("x", 0) - pos.get("x", 0)) + abs((e.get("tile") or {}).get("y", 0) - pos.get("y", 0)))
                 tree = trees[0]
                 target_tile = tree.get("tile")
-            try:
-                await self.b.move(near=tree["ref"])
-            except Exception as e:  # noqa: BLE001
-                self.log("  走不到树边：%s" % e)
+            snap, progress = await self.work_target(snap, "chop", tree, axe["slot"])
+            if progress:
+                self.last_chops += 1
+            else:
                 target_tile = None
-                snap = await self.snap(14)
-                continue
-            await self.b.select(axe["slot"])
-            try:
-                await self.b.use(tree["ref"])
-            except Exception:
-                # 砍树每一下都“看不出变化”，这个报错是正常的，不用管
-                misses += 1
-            self.last_chops += 1
-            snap = await self.snap(14)
         wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if (i.get("name") or "") in ("木材", "木头"))
         self.log("  砍了 %d 下，木头 %d" % (self.last_chops, wood))
         return snap

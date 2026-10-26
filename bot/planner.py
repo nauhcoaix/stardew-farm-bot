@@ -1,6 +1,14 @@
 ﻿"""让模型给农场出计划（每天一次 + 事件触发）。
 
-复用 wechat-auto 的 DeepSeek 配置，不额外申请 key。
+密钥与模型设置只认一个地方：bot/planner-config.json（.gitignore 已忽略）。
+也可以用环境变量 FARM_CFG 指向另一份同格式的配置文件（优先于上面的默认路径）。
+
+planner-config.json：
+{
+  "api_key": "sk-...",
+  "api_base": "https://api.deepseek.com/chat/completions",
+  "model": "deepseek-chat"
+}
 """
 import json
 import os
@@ -8,10 +16,19 @@ import urllib.error
 import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+CONFIG_NAME = "planner-config.json"
+DEFAULT_BASE = "https://api.deepseek.com/chat/completions"
+DEFAULT_MODEL = "deepseek-chat"
+# example 里的占位符：万一有人直接把 example 当配置用，别拿它去请求
+PLACEHOLDERS = {"在这里填你的 key", "your-key", "your-api-key", "sk-xxx"}
+
 CANDIDATES = [
     os.environ.get("FARM_CFG") or "",
-    os.path.join(_HERE, "planner-config.json"),
+    os.path.join(_HERE, CONFIG_NAME),
 ]
+
+_announced_ok = False
+_announced_missing = False
 
 SYSTEM = """你是星露谷物语的农场助手，替玩家管理一个标准农场。
 
@@ -47,27 +64,44 @@ SYSTEM = """你是星露谷物语的农场助手，替玩家管理一个标准�
 """
 
 
+def _pick_key(cfg):
+    """从配置里取密钥：兼容 api_key / apiKey，跳过空值与占位符。"""
+    if not isinstance(cfg, dict):
+        return None
+    key = str(cfg.get("api_key") or cfg.get("apiKey") or "").strip()
+    if not key or key in PLACEHOLDERS or not key.startswith("sk-"):
+        return None
+    return key
+
+
 def _cfg():
+    """读密钥配置 -> (key, api_base, model)；没有可用配置时 key 为 None。"""
+    global _announced_ok, _announced_missing
     for path in CANDIDATES:
         if not path:
             continue
         try:
             with open(path, "r", encoding="utf-8-sig") as f:
-                c = json.load(f)
-            if c.get("api_key"):
-                return c.get("api_key"), (c.get("api_base") or "https://api.deepseek.com/chat/completions"), (c.get("model") or "deepseek-chat")
-        except Exception:
+                cfg = json.load(f)
+        except FileNotFoundError:
             continue
-    return None, "https://api.deepseek.com/chat/completions", "deepseek-chat"
-
-
-def _old_cfg():
-    try:
-        with open(WORKSPACE_CFG, "r", encoding="utf-8-sig") as f:
-            c = json.load(f)
-        return c.get("api_key"), c.get("api_base") or "https://api.deepseek.com/chat/completions", c.get("model") or "deepseek-chat"
-    except Exception:
-        return None, "https://api.deepseek.com/chat/completions", "deepseek-chat"
+        except Exception as e:  # noqa: BLE001
+            print("[planner] 配置读取失败 %s：%s" % (path, e), flush=True)
+            continue
+        key = _pick_key(cfg)
+        if not key:
+            print("[planner] %s 里没有可用的 api_key（空值或占位符）" % path, flush=True)
+            continue
+        base = cfg.get("api_base") or DEFAULT_BASE
+        model = cfg.get("model") or DEFAULT_MODEL
+        if not _announced_ok:
+            _announced_ok = True
+            print("[planner] 使用配置 %s：key=%s…%s model=%s" % (path, key[:6], key[-4:], model), flush=True)
+        return key, base, model
+    if not _announced_missing:
+        _announced_missing = True
+        print("[planner] 没有可用密钥配置（期望 %s），模型入口降级为规则流程" % os.path.join(_HERE, CONFIG_NAME), flush=True)
+    return None, DEFAULT_BASE, DEFAULT_MODEL
 
 
 def ask(state_text, timeout=60):
@@ -306,6 +340,52 @@ def next_tool(state_text, look_text, timeout=60):
     except Exception as e:  # noqa: BLE001
         print("问工具失败：%s" % e, flush=True)
         return None
+WORK_SYSTEM = """你是星露谷农场的后台规划者。人物会在你思考时继续干活，返回的计划将按最新状态重新检查。
+给出未来几项有价值的农务；不要逐格控制，不要输出目标ref、鼠标坐标或底层命令。
+可用动作与参数：harvest {}、water {}、till_plant {"limit":6}、clear {"limit":6,"min_energy":70}、
+chop {}、buy_seeds {"qty":20}、sell {}、sleep {}。
+water/harvest会分段持续到附近目标完成；clear/till_plant的limit是本步骤总量。最多6步。
+优先当前玩家任务，遵守其限制；做不到就返回空steps并说明原因。没有玩家任务时照料现有作物，再考虑扩种。
+不要为了保持忙碌耗尽体力；clear_min_energy至少40，睡眠时间不晚于2300。种植与清障按执行器可用范围进行。
+只输出JSON：
+{"daily":{"buy_qty":20,"buy_when_below":5,"clear_limit":3,"clear_min_energy":70,"chop":false,"sleep_at":2200,"reason":"今日重点"},
+ "steps":[{"action":"water","arg":{},"reason":"照料作物"}],"reply":"给玩家的简短说明"}
+daily只调整必要字段。没有有价值的工作时steps可为空。不要重复已经完成的工作。
+action_history记录近期目标结果：done已完成，progress有实际进展，failed失败，no_progress无变化。
+blocked_targets在目标状态变化前禁止重试；改做其他可执行工作，不要反复安排只有受阻目标的技能。
+"""
+
+
+def plan_work(state_text, current_plan, task=None, timeout=30):
+    """只做HTTP推理，不访问游戏；由单个后台工作线程调用。"""
+    key, base, model = _cfg()
+    if not key:
+        return None
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": WORK_SYSTEM},
+            {"role": "user", "content": json.dumps(
+                {"state": state_text, "current_plan": current_plan, "player_task": task},
+                ensure_ascii=False)},
+        ],
+        "temperature": 0.2, "max_tokens": 650,
+        "response_format": {"type": "json_object"},
+    }
+    req = urllib.request.Request(base, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", "Bearer " + key)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        result = _extract_json(payload["choices"][0]["message"]["content"])
+        return result if isinstance(result, dict) else None
+    except Exception as exc:  # noqa: BLE001
+        # 不打印请求/响应全文，避免配置与玩家文本进入异常日志。
+        print("后台规划请求失败：%s" % type(exc).__name__, flush=True)
+        return None
+
+
 if __name__ == "__main__":
     import sys
     print(json.dumps(ask(sys.stdin.read()), ensure_ascii=False, indent=2))
