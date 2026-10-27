@@ -24,13 +24,14 @@ public static class Protocol
         PropertyNameCaseInsensitive = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
-    public static readonly string[] Capabilities = { "snapshot", "menudump", "menuclick", "menuclickinv", "menuclose", "move", "select", "use", "interact", "menu", "screenshot", "status", "stop", "reset" };
+    public static readonly string[] Capabilities = { "snapshot", "menudump", "menuclick", "menuclickinv", "menuclose", "move", "select", "use", "interact", "menu", "screenshot", "status", "stop", "reset", "hud" };
     public static void Validate(Request r)
     {
         string[] allowed = r.Command switch
         {
             "reset" => Array.Empty<string>(),
                 "hello" or "snapshot" or "status" or "screenshot" or "stop" or "menudump" => r.Command == "snapshot" ? new[] { "radius" } : r.Command == "stop" ? new[] { "actionId" } : Array.Empty<string>(),
+            "hud" => new[] { "title", "lines", "ttlMs" },
             "menuclick" or "menuclickinv" => new[] { "x", "y" }, "shopbuy" => new[] { "index", "qty" }, "placechest" => new[] { "x", "y" }, "chestput" => new[] { "x", "y", "slot" }, "ship" => new[] { "slot" }, "bin" or "forceunlock" => Array.Empty<string>(), "warp" => new[] { "location", "x", "y" }, "chestget" => new[] { "x", "y", "name" }, "menuclose" => Array.Empty<string>(), "move" => new[] { "near", "tile" }, "select" => new[] { "slot" }, "use" or "interact" or "menu" => new[] { "target" },
             _ => throw new ActionFault("UNSUPPORTED", "未知命令。")
         };

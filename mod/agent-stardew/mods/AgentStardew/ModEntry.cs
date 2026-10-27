@@ -3,6 +3,7 @@ using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
+using System.Text.Json;
 
 namespace AgentStardew;
 
@@ -13,6 +14,12 @@ public sealed class ModEntry : Mod
     private readonly Observations observations = new();
     private readonly BackgroundUpdates background = new();
     private BridgeServer.Pending? screenshot;
+    // 游戏窗口左上角的叠加层：当前要做的动作 + 机器人记住的内容（由 Python 端推送）。
+    private string hudTitle = "";
+    private string[] hudLines = Array.Empty<string>();
+    private DateTime hudUntil = DateTime.MinValue;
+    private bool hudDrawn = false;
+    private bool hudCalled = false;
     public override void Entry(IModHelper helper)
     {
         try { server = new BridgeServer(17654); }
@@ -28,6 +35,7 @@ public sealed class ModEntry : Mod
         helper.Events.GameLoop.SaveLoaded += (_, _) => Reset();
         helper.Events.GameLoop.ReturnedToTitle += (_, _) => Reset();
         helper.Events.Display.Rendered += OnRendered;
+        helper.Events.Display.RenderedHud += (_, e) => DrawHud(e.SpriteBatch);
         Monitor.Log("Agent 桥接已监听 ws://127.0.0.1:17654/，支持游戏失焦时继续运行。", LogLevel.Info);
     }
     private void Reset()
@@ -61,6 +69,12 @@ public sealed class ModEntry : Mod
                 }
                 if (!pending.Peer.Handshaken) throw new ActionFault("INCOMPATIBLE_PROTOCOL", "需要先发送 hello。");
                 if (r.Command == "status") { Send(pending, Response.Ok(r, actions.Status)); continue; }
+                if (r.Command == "hud")
+                {
+                    SetHud(r.Args);
+                    Send(pending, Response.Ok(r, new { kind = "hud", lines = hudLines.Length, untilUtc = hudUntil }));
+                    continue;
+                }
                 if (r.Command == "stop")
                 {
                     var id = r.Args.TryGetProperty("actionId", out _) ? Protocol.Text(r.Args, "actionId") : null;
@@ -141,6 +155,93 @@ public sealed class ModEntry : Mod
             catch (Exception error) { Monitor.Log($"处理 {r.Command} 失败：{error}", LogLevel.Error); Send(pending, Response.Fail(r, "INTERNAL_ERROR", "游戏桥接异常，请查看 SMAPI 日志。")); }
         }
     }
+    /// <summary>叠加层诊断：写到 Mod 自己的 runtime/hud-diag.log，便于排查画没画出来。</summary>
+    private void HudDiag(string text)
+    {
+        try
+        {
+            var dir = Path.Combine(Helper.DirectoryPath, "runtime");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "hud-diag.log"),
+                $"{DateTime.UtcNow:O} {text}{Environment.NewLine}");
+        }
+        catch (Exception)
+        {
+            // 诊断写不进去不影响游戏
+        }
+    }
+
+    /// <summary>收下 Python 推来的叠加层文字；超时自动消失，避免残留成“幽灵状态”。</summary>
+    private void SetHud(JsonElement args)
+    {
+        var title = args.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String ? (t.GetString() ?? "") : "";
+        var lines = new List<string>();
+        if (args.TryGetProperty("lines", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in arr.EnumerateArray().Take(12))
+            {
+                if (item.ValueKind != JsonValueKind.String) continue;
+                var text = (item.GetString() ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+                if (text.Length == 0) continue;
+                lines.Add(text.Length > 120 ? text[..120] : text);
+            }
+        }
+        var ttl = 60000;
+        if (args.TryGetProperty("ttlMs", out var ms) && ms.ValueKind == JsonValueKind.Number && ms.TryGetInt32(out var value))
+            ttl = Math.Clamp(value, 1000, 600000);
+        hudTitle = title.Length > 120 ? title[..120] : title;
+        hudLines = lines.ToArray();
+        hudUntil = DateTime.UtcNow.AddMilliseconds(ttl);
+        HudDiag($"set title={hudTitle.Length} rows={hudLines.Length} until={hudUntil:O}");
+    }
+
+    /// <summary>只画文字层，不改游戏状态；绘制异常就让叠加层自己消失。</summary>
+    private void DrawHud(SpriteBatch batch)
+    {
+        if (!hudCalled) { hudCalled = true; HudDiag($"draw called until={hudUntil:O} rows={hudLines.Length}"); }
+        if (hudUntil == DateTime.MinValue || DateTime.UtcNow >= hudUntil) return;
+        if (hudTitle.Length == 0 && hudLines.Length == 0) return;
+        try
+        {
+            // RenderedHud 里 SpriteBatch 已经 Begin 过了：这里只 Draw，不能再 Begin/End。
+            var font = Game1.smallFont;
+            var lineHeight = font.MeasureString("Ag").Y + 4f;
+            var width = hudTitle.Length > 0 ? font.MeasureString(hudTitle).X : 0f;
+            foreach (var line in hudLines) width = Math.Max(width, font.MeasureString(line).X);
+            var rows = hudLines.Length + (hudTitle.Length > 0 ? 1 : 0);
+            // UI 视口原点常常是负数（画面被放大/居中），所以按视口原点换算到可见窗口左上角。
+            var vp = Game1.uiViewport;
+            var left = (vp.Width > 0 ? 12 - vp.X : 12);
+            var top = (vp.Height > 0 ? 12 - vp.Y : 12);
+            var box = new Rectangle(left, top, (int)width + 24, (int)(lineHeight * rows) + 16);
+            batch.Draw(Game1.staminaRect, box, Color.Black * 0.62f);
+            batch.Draw(Game1.staminaRect, new Rectangle(box.X, box.Y, 4, box.Height), Color.LimeGreen * 0.9f);
+            var y = box.Y + 8f;
+            if (hudTitle.Length > 0)
+            {
+                batch.DrawString(font, hudTitle, new Vector2(box.X + 12, y), Color.Gold);
+                y += lineHeight;
+            }
+            foreach (var line in hudLines)
+            {
+                batch.DrawString(font, line, new Vector2(box.X + 12, y), Color.White);
+                y += lineHeight;
+            }
+            if (!hudDrawn)
+            {
+                hudDrawn = true;
+                HudDiag($"drawn at {box.X},{box.Y} size {box.Width}x{box.Height} viewport {Game1.uiViewport.X},{Game1.uiViewport.Y} {Game1.uiViewport.Width}x{Game1.uiViewport.Height}");
+                Monitor.Log($"叠加层已显示（{hudLines.Length + 1} 行）", LogLevel.Info);
+            }
+        }
+        catch (Exception error)
+        {
+            hudUntil = DateTime.MinValue;
+            HudDiag($"error {error.GetType().Name}: {error.Message}");
+            Monitor.Log($"叠加层绘制失败，已关闭：{error.GetType().Name}: {error.Message}", LogLevel.Warn);
+        }
+    }
+
     private void OnRendered(object? sender, RenderedEventArgs e)
     {
         if (screenshot is not { } pending) return;

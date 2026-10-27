@@ -21,8 +21,11 @@ foreach ($fileName in $fileNames) {
     }
 }
 $manifest = Get-Content -LiteralPath (Join-Path $buildRoot 'manifest.json') -Encoding UTF8 -Raw | ConvertFrom-Json
-if ($manifest.UniqueID -ne 'AgentStardew.Bridge' -or $manifest.Version -ne '0.1.1') {
-    throw '构建目录不是本次记忆桥接0.1.1，拒绝覆盖。'
+if ($manifest.UniqueID -ne 'AgentStardew.Bridge') {
+    throw '构建目录不是 AgentStardew 桥，拒绝覆盖。'
+}
+if ([version]$manifest.Version -lt [version]'0.1.1') {
+    throw "构建版本 $($manifest.Version) 过旧；至少需要 0.1.1（记忆桥接）。"
 }
 $targetRoot = Join-Path $gameRoot 'Mods\AgentStardew'
 $running = @(Get-Process -Name 'StardewModdingAPI', 'Stardew Valley' -ErrorAction SilentlyContinue)

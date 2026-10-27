@@ -48,7 +48,7 @@ def clean_steps(steps):
     text_fields = {"target", "candidate", "location", "to", "query", "kind", "text", "question", "item"}
     ranges = {"x": (0, 1000), "y": (0, 1000), "slot": (0, 35), "index": (0, 1000),
               "limit": (1, 30), "qty": (1, 20), "min_energy": (15, 270), "radius": (1, 16), "max_seconds": (10, 120)}
-    for step in steps[:6]:
+    for step in steps[:12]:
         if not isinstance(step, dict) or not isinstance(step.get("action"), str) or step["action"] not in ACTIONS:
             continue
         name = step["action"]
