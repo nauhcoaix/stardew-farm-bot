@@ -78,3 +78,37 @@ python bot\route_learn.py                    # 整理成 exports
 
 - **游戏每 10~15 分钟挂一次**（SMAPI 崩或变僵尸），学习会被反复打断
 - 它只有"记忆层面的学习"，不会改进技能实现；重复的错误要靠记忆/动作历史压住
+
+---
+
+## 记忆与检索（L1~L4）
+
+| 层 | 做了什么 | 位置 |
+|---|---|---|
+| L1 | 中文 bigram 倒排索引，替代 LIKE '%词%' 整词匹配 | ot/memory_store.py（grams 表） |
+| L2 | bigram TF-IDF 余弦 + 时间衰减（6h 半衰）+ 类型权重 的混合打分 | memory_store.query() |
+| L3 | 世界知识（坐标/出口/作物/规则）每轮直接进 prompt | ot/knowledge.json + ot/knowledge.py |
+| L4 | 把当天的反思压成 ≤5 条「教训」，跨存档常驻 | scripts/consolidate-memory.py → kind='lesson' |
+
+### 日常用法
+
+``powershell
+# 每晚压缩一次当天经验（调模型，生成 5 条以内）
+python scripts\consolidate-memory.py --apply --hours 24 --max-lessons 5
+
+# 只看看有哪些候选记录（不花 token）
+python scripts\consolidate-memory.py --dry-run
+
+# 剪掉观察类噪声（先停服务）
+python scripts\prune-memory.py --apply
+``
+
+### 检索打分
+
+``
+score = 0.55 × 余弦相似度 + 0.25 × 时间衰减 + 命中数加成 × 类型权重
+类型权重：lesson 3.0 / instruction 2.2 / import 2.0 / reflection 1.8 / transition 1.5
+          skill 1.0 / observation 0.9 / plan 0.7 / movement 0.3
+``
+
+教训（lesson）**不按存档过滤**——它是游戏机制级知识，所有存档通用。

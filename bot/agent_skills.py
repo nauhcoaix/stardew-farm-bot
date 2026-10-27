@@ -6,6 +6,7 @@ import uuid
 from exploration import candidates, path_to, region_route
 from farmer import tool_slot, seeds_in, water_can, CLEAR_TOOLS
 import farm_layout
+import knowledge
 from memory_store import dumps, position, scene, semantic, target_id
 from skill_catalog import available, catalog
 from skill_fishing import FishingSkill
@@ -51,6 +52,19 @@ class SkillRuntime:
         return allowed and not self.memory.blocked(action, snap)
 
     def context(self, snap, objective=""):
+        base = self._context(snap, objective)
+        # L3 世界知识 + L4 长期经验：每轮都带上，不依赖检索是否命中
+        try:
+            base["world_knowledge"] = knowledge.digest(24)
+        except Exception:
+            base["world_knowledge"] = []
+        try:
+            base["lessons"] = self.memory.lessons(10, snap=snap)
+        except Exception:
+            base["lessons"] = []
+        return base
+
+    def _context(self, snap, objective=""):
         p = position(snap)
         entities = list(snap.get("entities") or [])
         important = {"npc", "exit", "door", "bed", "furniture", "action", "object"}

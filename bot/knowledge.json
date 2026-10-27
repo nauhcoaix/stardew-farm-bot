@@ -1,0 +1,38 @@
+{
+  "_note": "农场机器人的世界知识（L3）。只写确定的事实；不确定的标 unknown，别让模型瞎猜。",
+  "farm": {
+    "farmhouse_door": [64, 14],
+    "plot_rect": {"x1": 60, "x2": 69, "y1": 15, "y2": 22},
+    "known_exits": [
+      {"from": "Farm", "to": "BusStop", "tile": [78, 17], "note": "北边路上，踩上去切图"},
+      {"from": "Farm", "to": "Backwoods", "tile": [41, 0], "note": "北边边缘，站上去再往北一步"},
+      {"from": "Farm", "to": "Forest", "tile": [41, 64], "note": "南边边缘"}
+    ]
+  },
+  "town": {
+    "known_exits": [
+      {"from": "Town", "to": "BusStop", "tile": [0, 54], "note": "西边"},
+      {"from": "Town", "to": "Mountain", "tile": [81, 0], "note": "东北角"},
+      {"from": "Town", "to": "Forest", "tile": [0, 90], "note": "西南角"}
+    ],
+    "pierre_shop": {"location": "Town", "tile": null, "note": "未知坐标：在小镇里，需实际走到并记录一次"}
+  },
+  "busstop": {
+    "known_exits": [
+      {"from": "BusStop", "to": "Town", "tile": [43, 23], "note": "沿路往东走到底"},
+      {"from": "BusStop", "to": "Farm", "tile": [10, 23], "note": "往西"}
+    ]
+  },
+  "crops": [
+    {"name": "防风草", "season": "spring", "days": 4, "seed_price": 20, "sell": 35, "note": "春季最快回本"},
+    {"name": "土豆", "season": "spring", "days": 6, "seed_price": 50, "sell": 80},
+    {"name": "花椰菜", "season": "spring", "days": 12, "seed_price": 80, "sell": 175}
+  ],
+  "rules": [
+    "没有种子时不要反复找种子：先去浇水或清障，种子要靠收获或购买",
+    "农舍门（kind=door/name=农舍入口）不是移动目标，撞上去会进屋",
+    "作业范围：农舍 12 格内优先，圈内清完再扩 6 格",
+    "睡觉：游戏时间到 24:00 前回农舍床上睡，否则会晕倒扣体力",
+    "锄地只能锄 diggable 且未 tilled 的格子；已翻好的空地块直接播种"
+  ]
+}

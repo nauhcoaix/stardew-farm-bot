@@ -67,7 +67,11 @@ class MemoryStore:
         CREATE TABLE IF NOT EXISTS imports(save_id TEXT, name TEXT, PRIMARY KEY(save_id,name));
         CREATE TABLE IF NOT EXISTS cursors(save_id TEXT,session_id TEXT,seq INTEGER,last_point TEXT,
           PRIMARY KEY(save_id,session_id));
-        PRAGMA user_version=1;
+        -- 中文 bigram 倒排索引：LIKE '%词%' 只能整词命中，这里按 2-gram 建索引
+        CREATE TABLE IF NOT EXISTS grams(gram TEXT, event_id TEXT, save_id TEXT);
+        CREATE INDEX IF NOT EXISTS gram_lookup ON grams(gram, save_id);
+        CREATE INDEX IF NOT EXISTS gram_event ON grams(event_id);
+        PRAGMA user_version=2;
         """)
         self.current = {}
         self.previous = None
@@ -97,7 +101,57 @@ class MemoryStore:
                 event["location"], action_key, fingerprint, dumps(event), dumps(data or {})[:16000]))
         if self.active_action:
             self.evidence.append(event["id"])
+        self._index_grams(event["id"], event["save_id"], event)
         return event
+
+    # ---------- L1/L2：bigram 索引 + TF-IDF 检索 ----------
+    @staticmethod
+    def _grams(text):
+        """中文按 2-gram、英文数字按整词切；返回去重后的集合。"""
+        import re
+        t = str(text or "")
+        out = set()
+        for run in re.findall(r"[0-9A-Za-z_]+|[一-鿿]+", t):
+            if run[0].isascii():
+                if len(run) >= 2:
+                    out.add(run.lower())
+                continue
+            if len(run) == 1:
+                out.add(run)
+            for i in range(len(run) - 1):
+                out.add(run[i:i + 2])
+        return out
+
+    def _index_grams(self, event_id, scope, event):
+        text = " ".join(str(event.get("data", {}).get(k) or "") for k in
+                        ("text", "goal", "reply", "skill", "detail", "reason"))
+        text += " " + str(event.get("location") or "")
+        text += " " + str(event.get("kind") or "")
+        grams = self._grams(text)
+        if not grams:
+            return
+        with self.db:
+            self.db.executemany("INSERT INTO grams VALUES(?,?,?)",
+                                [(g, event_id, scope) for g in grams])
+
+    def rebuild_grams(self, snap=None):
+        """重建 bigram 索引（剪枝/迁移后调用）。"""
+        with self.db:
+            self.db.execute("DELETE FROM grams")
+        rows = self.db.execute("SELECT id,save_id,body,search,location,kind FROM events").fetchall()
+        n = 0
+        for r in rows:
+            try:
+                body = json.loads(r[2])
+            except Exception:
+                body = {}
+            body.setdefault("data", {})
+            body["search"] = r[3]
+            body["location"] = r[4]
+            body["kind"] = r[5]
+            self._index_grams(r[0], r[1], body)
+            n += 1
+        return n
 
     def observe(self, snap):
         if not snap or snap.get("ok") is False:
@@ -206,6 +260,11 @@ class MemoryStore:
 
     def query(self, text="", kind=None, location=None, limit=12, snap=None):
         scope = save_key(snap or self.current)
+        text = str(text or "")[:300]
+        if text:
+            scored = self._ranked(text, scope, kind=kind, location=location, limit=limit)
+            if scored is not None:
+                return scored
         clauses, values = ["save_id=?"], [scope]
         if text:
             clauses.append("search LIKE ? ESCAPE '\\'")
@@ -230,6 +289,91 @@ class MemoryStore:
                 event["data"]["details_in_database"] = True
             result.append(event)
         return result
+
+    KIND_WEIGHT = {"lesson": 3.0, "instruction": 2.2, "reflection": 1.8, "import": 2.0,
+                   "plan": 0.7, "intent": 0.8, "observation": 0.9, "skill": 1.0,
+                   "skill_call": 0.8, "skill_target": 0.6, "movement": 0.3, "transition": 1.5}
+
+    def _ranked(self, text, scope, kind=None, location=None, limit=12):
+        """bigram 候选 + TF-IDF 余弦 + 时间衰减 + 类型权重。返回 None 表示回退 LIKE。"""
+        grams = self._grams(text)
+        if not grams:
+            return None
+        marks = ",".join("?" for _ in grams)
+        try:
+            cand = self.db.execute(
+                "SELECT event_id, COUNT(*) AS hit FROM grams WHERE save_id=? AND gram IN (%s) "
+                "GROUP BY event_id ORDER BY hit DESC LIMIT 400" % marks,
+                [scope] + list(grams)).fetchall()
+        except Exception:
+            return None
+        if not cand:
+            return []
+        ids = [r[0] for r in cand]
+        hits = {r[0]: r[1] for r in cand}
+        marks = ",".join("?" for _ in ids)
+        rows = self.db.execute(
+            "SELECT id,kind,location,ts,body,search FROM events WHERE id IN (%s)" % marks, ids).fetchall()
+        import math
+        q = self._grams(text)
+        now = self.clock()
+        scored = []
+        for r in rows:
+            if kind and r["kind"] != kind:
+                continue
+            if location and r["location"] != location:
+                continue
+            doc = self._grams(" ".join([str(r["search"] or ""), self._event_text(json.loads(r["body"]))]))
+            if not doc:
+                continue
+            inter = len(q & doc)
+            cosine = inter / math.sqrt(max(1, len(q)) * max(1, len(doc)))
+            age_h = max(0.0, (now - (r["ts"] or now)) / 3600.0)
+            recency = 1.0 / (1.0 + age_h / 6.0)          # 6 小时半衰
+            weight = self.KIND_WEIGHT.get(r["kind"], 1.0)
+            score = cosine * 0.55 + recency * 0.25 + min(0.25, 0.02 * hits.get(r["id"], 0)) * weight
+            scored.append((score, r))
+        scored.sort(key=lambda x: -x[0])
+        out = [self._shrink(json.loads(r["body"])) for _, r in scored[:max(1, min(30, int(limit)))]]
+        return out
+
+    @staticmethod
+    def _event_text(body):
+        data = body.get("data") or {}
+        parts = [str(data.get(k) or "") for k in ("text", "goal", "reply", "skill", "detail", "reason")]
+        parts.append(str(body.get("location") or ""))
+        return " ".join(parts)
+
+    @staticmethod
+    def _shrink(event):
+        if len(dumps(event.get("data"))) > 8000:
+            data = event["data"]
+            event["data"] = {k: data[k] for k in ("skill", "args", "reason", "text", "from", "to",
+                                                  "from_tile", "to_tile", "goal") if k in data}
+            if isinstance(data.get("result"), dict):
+                event["data"]["result"] = {k: data["result"].get(k) for k in ("status", "progress", "detail")}
+            event["data"]["details_in_database"] = True
+        return event
+
+    def lessons(self, limit=12, snap=None):
+        """长期经验（L4 压缩出来的），永远先给模型看。
+
+        教训是"游戏机制级"的知识，跨存档通用，所以不按 save_id 过滤。
+        """
+        rows = self.db.execute(
+            "SELECT body FROM events WHERE kind='lesson' ORDER BY ts DESC LIMIT ?",
+            (max(1, min(50, int(limit))),)).fetchall()
+        out = []
+        for (body,) in rows:
+            try:
+                out.append(json.loads(body)["data"].get("text") or "")
+            except Exception:
+                continue
+        return [t for t in out if t]
+
+    def add_lesson(self, text, source="consolidate", snap=None):
+        return self.append("lesson", snap, source=source, confidence="observed",
+                           data={"text": str(text)[:500]})
 
     def tiles(self, location=None, snap=None):
         snap = snap or self.current
