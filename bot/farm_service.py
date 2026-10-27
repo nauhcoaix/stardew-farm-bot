@@ -31,7 +31,6 @@ from agent_skills import SkillRuntime
 from skill_catalog import available
 from memory_store import save_key
 import planner
-import hud
 
 SEASON_CN = {"spring": "春", "summer": "夏", "fall": "秋", "winter": "冬"}
 DAY_STATS = {}
@@ -59,17 +58,6 @@ def log(msg):
             f.write("%s %s\n" % (time.strftime("%Y-%m-%d"), line))
     except Exception:
         pass
-
-
-_OVERLAY = None
-
-
-def overlay():
-    """进程内唯一的窗口叠加层对象；桥不支持时它自己只提示一次。"""
-    global _OVERLAY
-    if _OVERLAY is None:
-        _OVERLAY = hud.Hud(log=log)
-    return _OVERLAY
 
 
 def ensure_dirs():
@@ -514,29 +502,16 @@ async def _run_once(brain):
         action = brain.take_action(lambda a: runtime.ready(a, snap))
         if action is None:
             write_status(snap, action="模型选择技能中" if brain.thinking else "等待模型或新的可执行选择", brain=brain)
-            await overlay().show_status(b, "等待模型选技能",
-                                        extra=["队列剩余 %d 步" % brain.queued,
-                                               "后台请求进行中" if brain.thinking else "暂无请求"],
-                                        memory=brain.memory, snap=snap)
             return False
         before = snap
         record_decision(action, snap)
         write_status(snap, action=action["action"], brain=brain)
-        # 先让模型在「执行当前动作」期间就规划下一段（并行），再把这一步做完；HUD 同步显示。
-        brain.prefetch(planning_text(snap, runtime=runtime, objective=brain.intent))
-        await overlay().show_action(b, action, goal=brain.goal or brain.intent,
-                                    queued=brain.queued, thinking=brain.thinking,
-                                    memory=brain.memory, snap=snap)
         snap, result = await runtime.execute(action, b, f, snap)
         if result.get("remaining_arg") is not None:
             action = dict(action, arg=result["remaining_arg"])
         brain.complete(action, result.get("progress", False), repeat=result.get("repeat", False))
         remember(snap)
         write_status(snap, action=action["action"] + "：" + result["status"], brain=brain)
-        await overlay().show_status(b, "%s：%s" % (action["action"], result["status"]),
-                                    extra=[str(result.get("detail") or "")[:100],
-                                           "剩余 %d 步" % brain.queued],
-                                    memory=brain.memory, snap=snap)
         if context_key(before) != context_key(snap) and before.get("date") != snap.get("date"):
             backup_saves()
         return bool(result.get("progress"))

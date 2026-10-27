@@ -118,23 +118,13 @@ class WorkPlanner:
                 self._failures += 1
                 self._retry_at = self.clock() + min(60, 3 * 2 ** min(self._failures - 1, 4))
                 self.log("模型暂不可用；只继续已经选定的技能，未选择新行动")
-        self.prefetch(state_text)
-
-    def prefetch(self, state_text, min_runway=2):
-        """就当前现场预取下一次选择；执行器继续跑队列里已选的动作。
-
-        min_runway：队列里还剩这么多步时就提前请求，而不是等队列见底才问模型。
-        """
-        if self.closed or self._pending:
-            return False
-        if self.clock() < self._retry_at or len(self._queue) > min_runway:
-            return False
+        if self._pending or self.clock() < self._retry_at or len(self._queue) > 1:
+            return
         context = {"objective": self.intent, "current_goal": self.goal,
-                   "remaining_steps": list(self._queue), "max_steps": 12}
+                   "remaining_steps": list(self._queue), "max_steps": 6}
         self._pending = (self._pool.submit(self.plan_fn, str(state_text), context, self.intent or None),
                          self.context, self._revision, self.clock())
-        self.log("后台选择技能中（预取 %d 步余量），执行器继续已选行动" % len(self._queue))
-        return True
+        self.log("后台选择技能中，执行器继续已选行动")
 
     def take_action(self, eligible):
         while self._queue:

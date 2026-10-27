@@ -72,7 +72,7 @@ class ObservedBridge:
         return await self._call("menu", {"target_ref": ref}, lambda: self.raw.menu(ref))
 
     async def request(self, command, args=None, **kwargs):
-        if command in ("snapshot", "status", "hello", "menudump", "bin", "hud"):
+        if command in ("snapshot", "status", "hello", "menudump", "bin"):
             result = await self.raw.request(command, args or {}, **kwargs)
             if command == "snapshot":
                 self.memory.observe(result)
