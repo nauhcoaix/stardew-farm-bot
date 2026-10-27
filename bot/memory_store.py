@@ -73,6 +73,14 @@ class MemoryStore:
         CREATE TABLE IF NOT EXISTS facts(save_id TEXT, key TEXT, value TEXT, updated_ts REAL, source TEXT,
           PRIMARY KEY(save_id, key));
         -- 任务板：带前置条件，条件不满足就 blocked（而不是反复试）
+        -- 地标：见过的障碍/水源/箱子/床/商店门（粗略全图）
+        CREATE TABLE IF NOT EXISTS landmarks(save_id TEXT, location TEXT, kind TEXT, x INTEGER, y INTEGER,
+          name TEXT, extra TEXT, seen_ts REAL, seen_day INTEGER, gone INTEGER DEFAULT 0,
+          PRIMARY KEY(save_id, location, kind, x, y));
+        -- 日程：每天 3~5 个阶段目标，而不是每 2.7 秒重选
+        CREATE TABLE IF NOT EXISTS schedule(save_id TEXT, day INTEGER, slot INTEGER, slot_name TEXT,
+          text TEXT, requires TEXT, status TEXT, updated_ts REAL,
+          PRIMARY KEY(save_id, day, slot));
         -- 已种下的作物：离开视野也记得，用来浇水
         CREATE TABLE IF NOT EXISTS planted(save_id TEXT, location TEXT, x INTEGER, y INTEGER,
           crop TEXT, planted_ts REAL, watered_ts REAL, PRIMARY KEY(save_id, location, x, y));
@@ -151,6 +159,97 @@ class MemoryStore:
         with self.db:
             self.db.executemany("INSERT INTO grams VALUES(?,?,?)",
                                 [(g, event_id, scope) for g in grams])
+
+    # ---------- 地标（粗略全图） ----------
+    OBSTACLE_NAMES = ("杂草", "Grass", "草", "石头", "岩石", "嫩枝", "树枝", "木头", "树桩")
+
+    @classmethod
+    def _landmark_kind(cls, e):
+        kind = str(e.get("kind") or "")
+        name = str(e.get("name") or "")
+        if e.get("refillable") or (kind in ("action", "object") and "水" in name):
+            return "water"
+        if "Chest" in str(e.get("objType")) or "箱" in name:
+            return "chest"
+        if kind == "bed":
+            return "bed"
+        if any(k in name for k in cls.OBSTACLE_NAMES):
+            return "obstacle"
+        if kind == "door" and ("店" in name or "Shop" in name):
+            return "shop_door"
+        return None
+
+    def update_landmarks(self, snap):
+        """视角内看到就记；在视野内确认没了才标 gone。返回 {kind: 变化数}。"""
+        if not snap:
+            return {}
+        scope, loc = save_key(snap), snap.get("location")
+        today = self.game_day(snap)
+        pos = position(snap)
+        seen, changes = set(), {}
+        for e in snap.get("entities") or []:
+            kind = self._landmark_kind(e)
+            if not kind:
+                continue
+            t = e.get("tile") or {}
+            x, y = t.get("x"), t.get("y")
+            if x is None:
+                continue
+            key = (kind, x, y)
+            seen.add(key)
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO landmarks(save_id,location,kind,x,y,name,extra,seen_ts,seen_day,gone) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,0) "
+                    "ON CONFLICT(save_id,location,kind,x,y) DO UPDATE SET name=excluded.name, "
+                    "seen_ts=excluded.seen_ts, seen_day=excluded.seen_day, gone=0",
+                    (scope, loc, kind, x, y, str(e.get("name") or ""),
+                     dumps(semantic(e))[:400], self.clock(), today))
+                changes[kind] = changes.get(kind, 0) + 1
+        # 视野半径内、之前记过、这次没出现的 -> gone
+        rows = self.db.execute(
+            "SELECT kind,x,y FROM landmarks WHERE save_id=? AND location=? AND gone=0", (scope, loc)).fetchall()
+        with self.db:
+            for r in rows:
+                key = (r["kind"], r["x"], r["y"])
+                if key in seen:
+                    continue
+                d = abs(r["x"] - pos["x"]) + abs(r["y"] - pos["y"])
+                if d <= 14:            # 只敢在"确定在视野内"时判定消失
+                    self.db.execute(
+                        "UPDATE landmarks SET gone=1, seen_ts=? WHERE save_id=? AND location=? AND kind=? AND x=? AND y=?",
+                        (self.clock(), scope, loc, r["kind"], r["x"], r["y"]))
+                    changes[r["kind"] + "_gone"] = changes.get(r["kind"] + "_gone", 0) + 1
+        return changes
+
+    def landmarks(self, snap=None, kind=None, location=None, only_alive=True):
+        snap = snap or self.current
+        scope = save_key(snap)
+        loc = location or snap.get("location")
+        sql = "SELECT kind,x,y,name,seen_day FROM landmarks WHERE save_id=? AND location=?"
+        args = [scope, loc]
+        if kind:
+            sql += " AND kind=?"
+            args.append(kind)
+        if only_alive:
+            sql += " AND gone=0"
+        return [{"kind": r["kind"], "x": r["x"], "y": r["y"], "name": r["name"], "seen_day": r["seen_day"]}
+                for r in self.db.execute(sql + " ORDER BY seen_ts DESC", args)]
+
+    def landmark_digest(self, snap=None, near=None, limit=8):
+        """给模型看的粗略全图摘要：每类几个 + 最近的几个坐标。"""
+        snap = snap or self.current
+        pos = position(snap)
+        out = []
+        for kind, label in (("obstacle", "障碍"), ("water", "水源"), ("chest", "箱子"),
+                            ("bed", "床"), ("shop_door", "商店门")):
+            items = self.landmarks(snap, kind=kind)
+            if not items:
+                continue
+            items.sort(key=lambda i: abs(i["x"] - pos["x"]) + abs(i["y"] - pos["y"]))
+            coord = "，".join("(%d,%d)" % (i["x"], i["y"]) for i in items[:limit])
+            out.append("%s %d 个（最近的：%s）" % (label, len(items), coord))
+        return out
 
     # ---------- 已种作物（持久化，供浇水用） ----------
     SEASON_INDEX = {"spring": 0, "summer": 1, "fall": 2, "winter": 3}
@@ -280,6 +379,117 @@ class MemoryStore:
             (scope, loc, today, today)).fetchall()
         return [(r["x"], r["y"], r["crop"]) for r in rows]
 
+    # ---------- 日程（每天 3~5 个阶段） ----------
+    SLOT_NAMES = ["早上", "上午", "中午", "下午", "傍晚"]
+
+    def build_schedule(self, snap):
+        """按当前游戏日 + 事实生成当天阶段目标；已存在就不重排。"""
+        if not snap:
+            return []
+        scope, today = save_key(snap), self.game_day(snap)
+        if today is None:
+            return []
+        have = self.db.execute("SELECT COUNT(*) FROM schedule WHERE save_id=? AND day=?",
+                               (scope, today)).fetchone()[0]
+        facts = self.facts(snap)
+        if have:
+            return self.schedule(snap)
+        stages = []
+        if facts.get("crops_thirsty", 0) > 0:
+            stages.append(("浇水", "把今天还没浇的作物都浇一遍", {"crops_thirsty": ">=1"}))
+        if facts.get("planted_unwatered", 0) > 0:
+            stages.append(("补浇", "按记忆坐标去浇已种未浇的地", {"planted_unwatered": ">=1"}))
+        if facts.get("harvestable", 0) > 0:
+            stages.append(("收成", "把成熟的作物收了", {"harvestable": ">=1"}))
+        if facts.get("seeds", 0) > 0 and (facts.get("tillable", 0) > 0 or facts.get("tilled_empty", 0) > 0):
+            stages.append(("种植", "把种子种到农舍附近的地里", {"seeds": ">=1"}))
+        elif facts.get("seeds", 0) == 0:
+            stages.append(("买种子", "去小镇皮埃尔种子店买防风草种子", None))
+        if facts.get("tillable", 0) > 0:
+            stages.append(("清障", "清农舍 12 格内的障碍，腾出可耕地", None))
+        stages.append(("收工", "回农舍，时间不早于 21:00 就睡觉", None))
+        stages = stages[:5]
+        with self.db:
+            for i, (name, text, req) in enumerate(stages):
+                self.db.execute(
+                    "INSERT OR IGNORE INTO schedule VALUES(?,?,?,?,?,?,?,?)",
+                    (scope, today, i, self.SLOT_NAMES[i], text,
+                     dumps(req or {}), "pending", self.clock()))
+        return self.schedule(snap)
+
+    def schedule(self, snap=None):
+        snap = snap or self.current
+        scope, today = save_key(snap), self.game_day(snap)
+        if today is None:
+            return []
+        return [{"slot": r["slot"], "slot_name": r["slot_name"], "text": r["text"],
+                 "status": r["status"],
+                 "requires": json.loads(r["requires"] or "{}")}
+                for r in self.db.execute(
+                    "SELECT slot,slot_name,text,status,requires FROM schedule "
+                    "WHERE save_id=? AND day=? ORDER BY slot", (scope, today))]
+
+    def current_stage(self, snap=None):
+        for st in self.schedule(snap):
+            if st["status"] in ("pending", "blocked"):
+                return st
+        return None
+
+    def advance_schedule(self, snap=None):
+        """把当前阶段标完成；下一阶段自然接上。"""
+        stages = self.schedule(snap)
+        for st in stages:
+            if st["status"] in ("pending", "blocked"):
+                scope, today = save_key(snap or self.current), self.game_day(snap or self.current)
+                with self.db:
+                    self.db.execute("UPDATE schedule SET status='done', updated_ts=? "
+                                    "WHERE save_id=? AND day=? AND slot=?",
+                                    (self.clock(), scope, today, st["slot"]))
+                return st
+        return None
+
+    def auto_advance_schedule(self, snap=None):
+        """按事实自动推进：活干完了就把阶段标完成（不然会一直卡在早上浇水）。"""
+        snap = snap or self.current
+        facts = self.facts(snap)
+        cur = self.current_stage(snap)
+        if not cur:
+            return None
+        text, name = cur["text"], cur["slot_name"]
+        done = False
+        if "浇" in text and facts.get("crops_thirsty", 0) == 0 and facts.get("planted_unwatered", 0) == 0:
+            done = True
+        elif "买" in text and facts.get("seeds", 0) > 0:
+            done = True
+        elif "种" in text and facts.get("seeds", 0) == 0:
+            done = True          # 种子用完了，这条阶段自然结束
+        elif "收" in text and facts.get("harvestable", 0) == 0:
+            done = True
+        elif "清障" in text and facts.get("obstacles_known", 0) == 0:
+            done = True
+        if done:
+            self.advance_schedule(snap)
+            return (text, name)
+        return None
+
+    def validate_schedule(self, snap=None):
+        """按事实把阶段的 blocked/pending 调准。"""
+        facts = self.facts(snap)
+        scope, today = save_key(snap or self.current), self.game_day(snap or self.current)
+        changed = []
+        for st in self.schedule(snap):
+            if st["status"] == "done":
+                continue
+            ok, why = self._check_requires(st["requires"], facts)
+            want = "pending" if ok else "blocked"
+            if st["status"] != want:
+                with self.db:
+                    self.db.execute("UPDATE schedule SET status=?, updated_ts=? "
+                                    "WHERE save_id=? AND day=? AND slot=?",
+                                    (want, self.clock(), scope, today, st["slot"]))
+                changed.append((st["text"], want, why))
+        return changed
+
     # ---------- 状态板（facts）与任务板（tasks） ----------
     SEED_KEYWORDS = ("种子", "种子包", "Seeds", "seeds")
 
@@ -314,6 +524,10 @@ class MemoryStore:
         except Exception:
             pass
         try:
+            self.update_landmarks(snap)       # 障碍/水源/箱子进地标表
+        except Exception:
+            pass
+        try:
             unwatered = len(self.unwatered_planted(snap))
         except Exception:
             unwatered = 0
@@ -332,6 +546,9 @@ class MemoryStore:
             "crops_overdue": len(overdue),
             "crops_thirsty": len(thirsty),
             "crops_seen": len(progress),
+            "obstacles_known": len(self.landmarks(snap, kind="obstacle")),
+            "water_known": len(self.landmarks(snap, kind="water")),
+            "chests_known": len(self.landmarks(snap, kind="chest")),
             "seeds": seeds,
             "tilled_empty": tilled_empty,
             "tillable": tillable,

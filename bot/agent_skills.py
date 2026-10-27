@@ -63,6 +63,15 @@ class SkillRuntime:
             base["lessons"] = self.memory.lessons(10, snap=snap)
         except Exception:
             base["lessons"] = []
+        try:
+            base["landmarks"] = self.memory.landmark_digest(snap)
+        except Exception:
+            base["landmarks"] = []
+        try:
+            base["schedule"] = self.memory.schedule(snap)
+            base["current_stage"] = self.memory.current_stage(snap)
+        except Exception:
+            base["schedule"], base["current_stage"] = [], None
         return base
 
     def _context(self, snap, objective=""):

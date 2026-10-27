@@ -502,6 +502,17 @@ async def _run_once(brain):
             for text, status, why in brain.memory.validate_tasks(snap):
                 log("任务「%s」-> %s%s" % (text[:40], status, ("（%s）" % why) if why else ""))
             brain.memory.prune_tasks(20, snap=snap)
+            try:
+                brain.memory.build_schedule(snap)
+                for text, status, why in brain.memory.validate_schedule(snap):
+                    log("日程「%s」-> %s%s" % (text[:32], status, ("（%s）" % why) if why else ""))
+                moved = brain.memory.auto_advance_schedule(snap)
+                if moved:
+                    stage = brain.memory.current_stage(snap)
+                    log("日程推进：%s「%s」完成 -> 下一步 %s" % (
+                        moved[1], moved[0][:30], stage["text"][:30] if stage else "全部完成"))
+            except Exception as exc:
+                log("日程出错：%s" % exc)
         except Exception as exc:
             log("状态同步失败：%s" % exc)
         brain.poll(snap, planning_text(snap, runtime=runtime, objective=brain.intent))
