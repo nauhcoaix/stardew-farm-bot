@@ -6,7 +6,7 @@ DEFINITIONS = {
     "observe": ("观察当前范围，不移动或改变游戏", {"radius": "1..16"}),
     "memory": ("查询统一记忆或记录带证据的假设；不会把模型笔记标为游戏事实", {"op": "recall|remember", "query": "检索文字", "kind": "事件类型，可选", "location": "地图，可选", "text": "笔记", "evidence": "证据ID列表", "limit": "1..30"}),
     "explore": ("选择探索目的地、交互对象或试验；执行一次有界行动并记录发现", {"mode": "path|interaction|capability", "candidate": "探索候选ID", "target": "现场目标ID", "x": "已知坐标，可选", "y": "已知坐标，可选", "skill": "use|interact，功能试验时", "slot": "工具槽，可选", "question": "要验证的假设"}),
-    "move": ("走向模型选的坐标/目标；按已观察地图和记忆规划，每段最多3格", {"x": "已知坐标", "y": "已知坐标", "target": "目标ID，和坐标二选一", "location": "目标所属地图，可选"}),
+    "move": ("走向模型选的坐标/目标；本次最多走几格由 steps 决定（1..24，默认走完整段路径）", {"x": "已知坐标", "y": "已知坐标", "target": "目标ID，和坐标二选一", "location": "目标所属地图，可选", "steps": "本次最多走几格，1..24，可选"}),
     "travel": ("去记忆中已发现的区域，使用已观察到的连接；无预设世界路由", {"to": "已知地图名称"}),
     "interact": ("靠近后交互对象/NPC/门/出口；不猜菜单选项", {"target": "现场目标ID"}),
     "select": ("选择背包槽位", {"slot": "现场存在的槽位"}),
@@ -46,7 +46,7 @@ def clean_steps(steps):
         return []
     out = []
     text_fields = {"target", "candidate", "location", "to", "query", "kind", "text", "question", "item"}
-    ranges = {"x": (0, 1000), "y": (0, 1000), "slot": (0, 35), "index": (0, 1000),
+    ranges = {"x": (0, 1000), "y": (0, 1000), "slot": (0, 35), "index": (0, 1000), "steps": (1, 24),
               "limit": (1, 30), "qty": (1, 20), "min_energy": (15, 270), "radius": (1, 16), "max_seconds": (10, 120)}
     for step in steps[:6]:
         if not isinstance(step, dict) or not isinstance(step.get("action"), str) or step["action"] not in ACTIONS:

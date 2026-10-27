@@ -37,6 +37,7 @@ def success(detail, output=None, progress=True, repeat=False, arg=None):
 
 
 class SkillRuntime:
+    DEFAULT_STEPS = 24      # 模型没指定 steps 时的上限（整段路径）
     def __init__(self, memory, data_dir, log=print, interrupted=lambda: False, fishing=None):
         self.memory, self.log, self.interrupted = memory, log, interrupted
         self.fishing = fishing or FishingSkill(data_dir)
@@ -83,12 +84,18 @@ class SkillRuntime:
             raise ValueError("目标不在当前观察中；请observe或先走近已记住的位置")
         return target
 
-    async def _move(self, b, snap, x, y):
+    async def _move(self, b, snap, x, y, steps=None):
+        """走一步棋：本次最多走 steps 格（由模型决定，1..24；不给就按整段路径）。"""
         path = path_to(snap, self.memory, (x, y))
         if path is None:
             raise ValueError("没有已观察的可通行路径；请从探索候选选择前沿，不猜路线")
+        try:
+            limit = int(steps) if steps is not None else self.DEFAULT_STEPS
+        except (TypeError, ValueError):
+            limit = self.DEFAULT_STEPS
+        limit = max(1, min(24, limit))
         initial = scene(snap)
-        for px, py in path[:3]:
+        for px, py in path[:limit]:
             if self.interrupted():
                 return snap, success("移动被新指令或STOP中断", progress=False)
             await b.move(x=px, y=py)
@@ -253,7 +260,7 @@ class SkillRuntime:
                     return await self._move(b, snap, e["tile"]["x"], e["tile"]["y"])
                 current, result = await self._near(b, snap, e)
                 return current, result or success("已在目标旁边", progress=False)
-            return await self._move(b, snap, arg["x"], arg["y"])
+            return await self._move(b, snap, arg["x"], arg["y"], steps=arg.get("steps"))
         if name == "travel":
             return await self._travel(b, snap, arg["to"])
         if name in ("interact", "use", "sleep", "till", "plant", "refill"):
@@ -284,7 +291,7 @@ class SkillRuntime:
                 x, y = (chosen["x"], chosen["y"]) if chosen else (arg.get("x"), arg.get("y"))
                 if x is None or y is None:
                     raise ValueError("路径探索需要模型选择候选ID或已知可达坐标")
-                return await self._move(b, snap, x, y)
+                return await self._move(b, snap, x, y, steps=arg.get("steps"))
             identity = arg.get("target") or arg.get("candidate")
             if mode == "capability":
                 self.memory.note(arg.get("question") or "验证此技能在当前对象上的效果", snap=snap)
