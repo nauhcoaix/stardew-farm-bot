@@ -1,11 +1,11 @@
 ---
 name: stardew-fishing
-description: 附加模块：在星露谷里按键触发一段钓鱼（抛竿、咬钩、小游戏、入包核对），不移动、不寻路、不改动农务服务。用户想亲自按触发键钓鱼、或需要脚本化单次钓鱼时使用。
+description: 附加模块：在星露谷里按键触发一段钓鱼（抛竿、咬钩、小游戏、入包核对），不移动、不寻路。可手动按键触发，也可由自主planner明确选择fish后串行调用。
 ---
 
 # 独立钓鱼（附加模块）
 
-- **执行器**：独立 SMAPI Mod `StandaloneFishingSkill`（`StardewFarmBot.StandaloneFishingSkill`），与 `bot/farm_service.py`、模型动作白名单、AgentStardew 协议**完全解耦**，默认关闭、不自动运行。
+- **执行器**：独立 SMAPI Mod `StandaloneFishingSkill`（`StardewFarmBot.StandaloneFishingSkill`），保留独立按键和文件接口，默认关闭；自主服务在模型明确选择 `fish` 后通过 `bot/skill_fishing.py` 移交控制。AgentStardew原有协议不增加钓鱼命令。
 - **触发方式**：游戏内按 **F7** 开始一段钓鱼，按 **F8** 立即停止；也可用控制台 `fish_skill_start` / `fish_skill_stop`，或脚本 `scripts/fish.py start|status|stop`。
 - **本模块不移动角色**：不做寻路、不选岸边、不跨地图。走到水边是**玩家本人或其它移动模块**（例如仓库里的 `travel` / `routes`）的职责；本模块只在**当前站位**钓鱼。
 
@@ -14,9 +14,9 @@ description: 附加模块：在星露谷里按键触发一段钓鱼（抛竿、�
 1. 单人存档、画面可操作（无菜单/事件/过场）；
 2. 背包里有 `FishingRod`，且至少一个空格（只有**完全没空位**时才会拒绝）；
 3. 站在水边，**面前 2~6 格内有可钓水面**（朝向就是抛竿方向）；
-   要往水边挪，用你自己的腿，或让农务侧代走：`{"action":"travel","arg":{"to":"Beach"}}`（区域名见 `bot/places.py`，按可见出口逐跳移动 + BUSY 重试，实现在 `bot/farm_service.py` 的 `travel()`）。本模块自己不走路。
+   自主模式由模型用 `move/explore/travel` 选择岸边和已发现的路线，再调用fish；连接来自统一记忆。本模块自己不走路。
 4. 体力 ≥ 30，游戏时间 < 22:00；
-5. 若农务服务在跑，先用它的 `STOP` 停稳——同一角色不能被两套控制同时驱动。
+5. 独立F7/CLI模式先用 `STOP` 停稳主服务；主服务内的fish由单执行器串行移交，结束/取消确认后才做别的事。
 
 按 F7 被拒时，游戏控制台会打出原因（例如「面前 2~6 格内没有可钓水面：走到岸边、朝向水面后再按」）。
 
@@ -64,4 +64,4 @@ python scripts/fish.py stop
 2. `powershell -NoProfile -File scripts/install.ps1 -GamePath "<游戏目录>"`（会编译、备份旧 DLL、只覆盖本 Mod 目录）；
 3. 用 SMAPI 启动游戏 → 控制台出现「独立钓鱼附加模块就绪」即加载成功。
 
-本技能不改动 `bot/` 下任何农务代码，也不改其它 Mod。
+独立Mod的按键和配置行为保留；模型调用的结果同时记入 `memory.sqlite3`。原始钓鱼现场文件继续作为诊断日志。

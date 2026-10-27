@@ -1,16 +1,18 @@
-# 星露谷农场机器人
+# 星露谷自主机器人
 
-让模型自己决定今天怎么种地，然后由代码去执行。
-
-**分工**：模型在后台生成当日参数和短期动作计划；执行器在等待模型时继续处理当前可执行农务。
-所有具体动作（走路、砍、种、浇、收、卖、睡觉）都由唯一执行器调游戏接口完成。
+模型根据能力目录、现场与统一记忆选择行动，包含记忆、探索、走路、交互、工具、菜单、农务和钓鱼。
+执行器动态寻路、复核结果并写回记忆。当前主服务已切换为自主模式，不再生成固定的每日农务日程。
+设计、记忆格式与使用方式见 [自主规划与统一记忆](docs/autonomous-agent.md)。
 
 ## 组成
 
 ```
 bot/
-  farm_service.py   常驻服务：白天干活、晚上睡觉、接指令（inbox）、写报告（outbox）
-  planner.py        问模型要当日计划（JSON）
+  farm_service.py   常驻服务：收意图、派发模型选择的技能、记录结果
+  planner.py        能力目录 + 现场 + 记忆 → 下一组技能（JSON）
+  memory_store.py   按存档保存统一事件、地图与连接索引
+  exploration.py    根据实际观察/记忆生成探索前沿和路径
+  agent_skills.py   模型可调用的技能执行器
   work_planner.py   后台规划、短期队列、过时结果校验、失败退避
   farmer.py         底层动作：走位/清障/翻地/播种/浇水/收获/卖货
   farm_client.py    SMAPI mod 的子进程桥（WebSocket + JSON-RPC）
@@ -31,11 +33,11 @@ docs/               调研笔记（MCP 桥、协议、同类项目）
 | 模型接口 | 默认 DeepSeek | 任何兼容 OpenAI 协议的都行 |
 
 `agent-stardew` 是 MIT 许可（`Copyright (c) 2026 agent-stardew contributors`），
-**源码不随本仓库分发**，请自行 clone 后编译 mod，把 `AgentStardew.dll` 放进
-`Mods/AgentStardew/`。
-
-本仓库对它做了两处改动（放开镰刀白名单、把树的生命值算进变化判定），见
-[`docs/mod-changes.md`](docs/mod-changes.md) 与 [`docs/mod-changes.patch`](docs/mod-changes.patch)。
+当前桥接源码在 `mod/agent-stardew/mods/AgentStardew/`。除工具兼容改动外，
+0.1.1增加存档/玩家ID、菜单身份和人物实际移动轨迹，供统一记忆使用。
+编译后正常退出游戏，运行 `powershell -File scripts/install-agent-bridge.ps1` 安装；
+脚本备份并校验桥接DLL及manifest，不修改独立钓鱼Mod、配置和存档。
+工具改动的历史说明见 [`docs/mod-changes.md`](docs/mod-changes.md)。
 
 ## 配置
 
@@ -84,34 +86,22 @@ cd bot
 它会：开游戏 → 等窗口 → 铺满 → 进存档 → 起服务（`--loop`）。
 停：`stop-farm.bat`，或者在 `bot/` 下建一个空文件 `STOP`。
 
-### 持续执行模式
+### 自主执行模式
 
-`--loop` 会将模型思考与农务执行分开：
+- 模型获得每项技能的参数、前提和不可用原因，自行决定当前小目标与行动。
+- memory、explore是可主动选择的技能；走过的路、看过的对象和技能结果写入同一个SQLite库。
+- 一次最多选择6步；执行器与后台推理并行，模型思考时继续已经委托的技能片段。
+- 移动依据已观察/记忆地形，每段最多3格；区域连接来自观察或真实过图，目标由模型选择。
+- 失败反馈、来源和证据保留；模型笔记标记为hypothesis，不能变成游戏事实。
+- 没有模型或模型尚未选择行动时等待，不切换到预设农务、固定路线或自动钓鱼。
+- status.json显示planner.goal、objective及最近技能结果。STOP仍由原入口控制。
 
-- 同时最多一个后台模型请求；请求只读取状态摘要，不操作游戏连接。
-- 模型一次返回最多 6 步；自主计划剩一项且达到补充间隔时提前请求下一段。
-- 没有模型结果时，按当前体力、物资和当日参数继续收获、浇水、播种等可执行工作。
-- 收获、浇水、播种与清障每段最多处理 3 格；任务未完成则在后续轮次继续。
-- 有实际进展时约 0.1 秒后进入下一轮；无可执行任务时等 2 秒，异常时等 5 秒。取消原来每轮固定的约 30 秒等待。
-- 模型失败按 15～120 秒退避；锄地、种植、浇水、收获、清障、砍树按“动作＋地图＋目标坐标”记忆结果。目标失败或无进展时跳过，先做其他目标；仅消耗体力或水不算进展。
-- 历史保存到数据目录 `action-history.json`，同一游戏会话内重启服务也保留。目标状态变化、跨日或换存档后重新评估；`STALE_REF/BUSY/TRANSITION` 只允许一次延迟重试。整项技能受阻时仍有 30 秒冷却。
-- 日志用 `[动作历史 till@Farm:66,21 #…] failed/no_progress/done/progress` 标记结果，后台模型也会收到近期历史。具体规则见 `docs/action-history.md`。
-- 派发前根据最新状态检查；跨日期、存档会话或玩家新指令的旧结果不会覆盖当前计划。
-
-`task` 指令会立即回执并进入后台规划；新任务或直接控制指令替换尚未完成的旧任务。
-规划期间继续默认农务或现有当日设置，模型返回后再逐段执行新任务。`status.json` 新增
-`planner.thinking` 和 `planner.queued_steps`，可观察是否在思考及剩余步骤数。
-
-`--once` 只执行一段当前可执行农务并退出；需要持续接收和执行模型结果时使用 `--loop`。
-采购往返、回家睡觉、节日仍保留原有完整技能流程；新计划和停止指令在技能边界检查。
-停止时不再派发游戏动作；在途 HTTP 线程可能仍需等待网络超时才退出进程。
-
-本次只调整 Python，无需重编 Mod，也没有新增依赖。运行中的旧服务需要重启才会加载新代码。
-
-离线回归测试（不启动游戏、不调用真实模型）：
+需要AgentStardew桥0.1.1提供稳定存档ID与菜单身份，正常退出游戏后更新Mod并重启SMAPI及服务。
+旧桥会明确退化为会话级记忆，避免错误混合存档。没有新增Python依赖。
 
 ```powershell
 python -m unittest discover -s tests -v
+python bot/memory_cli.py stats
 ```
 
 ## 体检
@@ -129,7 +119,9 @@ python bot\farm-doctor.py
 - SMAPI 控制台窗口标题里也有 `Stardew Valley`，按标题找窗口会认错 → 必须按窗口类名排除 `console`/`terminal`
 - `SetWindowPos` 拉窗口前要先 `ShowWindow(SW_RESTORE)`，最大化状态下直接拉不动
 
-## 清障策略
+## 历史独立脚本：清障策略
+
+下面保留旧规则实现的说明；新主服务由模型选择技能，不会自动执行这套每日策略。
 
 **缺地才清，而且只在开垦区清。** 细节见 [`docs/clear-policy.md`](docs/clear-policy.md)：
 缺口驱动、区域闸门（none/cluster/path/all）、每日预算、把农场地图摘要喂给模型。

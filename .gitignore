@@ -33,6 +33,10 @@ decisions.jsonl
 farm-state.json
 action-history.json
 action-history.json.tmp
+memory.sqlite3
+memory.sqlite3-wal
+memory.sqlite3-shm
+memory-export*.jsonl
 _svc-*.txt
 svc-*.txt
 *.bak-*

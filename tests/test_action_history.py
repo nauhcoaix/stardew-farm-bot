@@ -11,6 +11,7 @@ from farm_service import made_progress
 import farm_service as service
 from action_history import ActionHistory
 from work_planner import WorkPlanner
+from memory_store import target_id
 from unittest.mock import patch
 
 
@@ -56,6 +57,7 @@ class TillBridge:
 class HistoryRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_tile_is_skipped_and_next_tile_is_worked(self):
         bridge = TillBridge()
+        bridge.state["entities"][1]["tile"]["y"] = 20
         farmer = Farmer(bridge, log=lambda text: None)
         for _ in range(2):
             await farmer.till(await bridge.snapshot(), limit=1)
@@ -71,6 +73,7 @@ class HistoryRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_service_retains_failure_across_farmers_and_continues_model_task(self):
         bridge = TillBridge()
+        bridge.state["entities"][1]["tile"]["y"] = 20
         bridge.state["inventory"].append({"slot": 1, "name": "防风草种子", "count": 10})
         brain = WorkPlanner(lambda *args: {"steps": []}, log=lambda text: None)
         brain.observe(bridge.state)
@@ -82,11 +85,11 @@ class HistoryRegressionTests(unittest.IsolatedAsyncioTestCase):
                 DECISIONS_FILE=tmp + "/decisions.jsonl", LOOT_DONE=[True]), patch.object(service, "log"):
             try:
                 self.assertFalse(await service.run_once(brain))
-                self.assertTrue(brain.allowed("till_plant"), "另有可用地块时不冻结整种技能")
+                brain.set_steps([{"action": "till", "arg": {"target": target_id("Farm", bridge.state["entities"][1])}}])
                 self.assertTrue(await service.run_once(brain))
                 self.assertEqual(bridge.used.count("66"), 1)
                 self.assertEqual(bridge.used[1], "67")
-                self.assertIn("till@Farm:66,21", service.planning_text(bridge.state, brain.history))
+                self.assertTrue(any(e["status"] == "failed" for e in brain.memory.query(kind="skill")), "失败技能结果应在统一记忆里")
             finally:
                 brain.close()
 

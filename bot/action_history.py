@@ -44,8 +44,10 @@ def target_progress(action, before, after, entity, verified=False):
 
 
 class ActionHistory:
-    def __init__(self, path=None, log=lambda text: None, clock=time.time):
+    def __init__(self, path=None, log=lambda text: None, clock=time.time, memory=None):
         self.path, self.log, self.clock = path, log, clock
+        self.memory = memory
+        self._import_checked = False
         self.context = None
         self.records = {}
         self.recent = deque(maxlen=24)
@@ -68,6 +70,15 @@ class ActionHistory:
         date = snap.get("date") or {}
         context = [snap.get("instanceId"), snap.get("saveGeneration"),
                    date.get("year"), date.get("season"), date.get("day")]
+        if self.memory is not None and not self._import_checked:
+            self._import_checked = True
+            if self.records:
+                imported_snap = snap
+                if context != self.context:
+                    tag = hashlib.sha256(json.dumps(self.context).encode()).hexdigest()[:16]
+                    imported_snap = {"instanceId": "unassigned-legacy-" + tag, "saveGeneration": 0,
+                                     "location": "unassigned", "date": {}}
+                self.memory.import_legacy("action-history:" + json.dumps(self.context), list(self.records.values()), imported_snap)
         if context != self.context:
             self.context = context
             self.records.clear()
@@ -103,6 +114,11 @@ class ActionHistory:
                "ts": self.clock()}
         self.records[key] = row
         self.recent.append({k: row[k] for k in ("label", "id", "status", "reason", "ts")})
+        if self.memory is not None:
+            self.memory.append("skill_target", after, source="executor", status=status,
+                data={"skill": action, "target": {"tile": entity.get("tile"), "kind": entity.get("kind"), "name": entity.get("name")},
+                      "label": key, "result": {"status": status, "progress": progress, "detail": row["reason"]},
+                      "before_state": target_state(before, entity), "after_state": state})
         self.log("  [动作历史 %s #%s] %s：%s%s" % (
             key, row["id"], status, row["reason"],
             "；等目标状态变化再试，先换其他目标" if not progress and row["retry_at"] is None else ""))

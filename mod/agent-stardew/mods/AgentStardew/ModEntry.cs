@@ -20,7 +20,11 @@ public sealed class ModEntry : Mod
         actions.OnError = error => Monitor.Log($"游戏动作失败：{error}", LogLevel.Error);
         helper.Events.GameLoop.GameLaunched += (_, _) => background.Initialize();
         helper.Events.GameLoop.UpdateTicking += OnTick;
-        helper.Events.GameLoop.UpdateTicked += (_, _) => background.AfterUpdate();
+        helper.Events.GameLoop.UpdateTicked += (_, _) =>
+        {
+            background.AfterUpdate();
+            if (Context.IsWorldReady) observations.RecordPosition();
+        };
         helper.Events.GameLoop.SaveLoaded += (_, _) => Reset();
         helper.Events.GameLoop.ReturnedToTitle += (_, _) => Reset();
         helper.Events.Display.Rendered += OnRendered;

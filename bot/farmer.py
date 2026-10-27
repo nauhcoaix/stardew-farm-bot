@@ -1048,7 +1048,7 @@ class Farmer:
         target_tile = None
         for _ in range(max_swings):
             wood = sum(i.get("count", 0) for i in snap.get("inventory") or [] if (i.get("name") or "") in ("木材", "木头"))
-            if wood >= want_wood:
+            if want_wood is not None and wood >= want_wood:
                 self.log("  木头够了：%d" % wood)
                 break
             if ((snap.get("player") or {}).get("energy") or 0) < 30:

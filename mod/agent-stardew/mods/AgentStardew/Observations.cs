@@ -14,9 +14,23 @@ public sealed class Observations
     private readonly Dictionary<string, Target> references = new();
     private readonly Queue<List<string>> snapshots = new();
     private long sequence;
+    private readonly Queue<object> positions = new();
+    private long positionSequence;
+    private string? lastPosition;
     public string InstanceId { get; } = Guid.NewGuid().ToString("N");
     public int Generation { get; private set; }
-    public void Reset() { Generation++; references.Clear(); snapshots.Clear(); }
+    public void Reset() { Generation++; references.Clear(); snapshots.Clear(); positions.Clear(); positionSequence = 0; lastPosition = null; }
+    public void RecordPosition()
+    {
+        if (Game1.player == null || Game1.currentLocation == null) return;
+        var p = Position;
+        var key = $"{Game1.currentLocation.NameOrUniqueName}/{p.X}/{p.Y}/{Game1.year}/{Game1.currentSeason}/{Game1.dayOfMonth}";
+        if (lastPosition == key) return;
+        lastPosition = key;
+        positions.Enqueue(new { seq = ++positionSequence, location = Game1.currentLocation.NameOrUniqueName,
+            tile = Tile(p), year = Game1.year, season = Game1.currentSeason, day = Game1.dayOfMonth, time = Game1.timeOfDay });
+        while (positions.Count > 256) positions.Dequeue();
+    }
     public static object Tile(Point p) => new { x = p.X, y = p.Y };
     public static Point Position => Game1.player.TilePoint;
     public static bool InBounds(GameLocation location, Point p) => p.X >= 0 && p.Y >= 0 && p.X < location.Map.Layers[0].LayerWidth && p.Y < location.Map.Layers[0].LayerHeight;
@@ -64,6 +78,7 @@ public sealed class Observations
     private static string? MapAction(GameLocation location, Point p) => location.doesTileHaveProperty(p.X, p.Y, "Action", "Buildings") ?? location.doesTileHaveProperty(p.X, p.Y, "TouchAction", "Back");
     public object Snapshot(int radius = 8)
     {
+        RecordPosition();
         var location = Game1.currentLocation;
         var center = Position;
         var id = "s" + ++sequence;
@@ -137,9 +152,9 @@ public sealed class Observations
                 if (dialogue.responses is { Length: > 0 })
                     for (var i = 0; i < dialogue.responses.Length; i++) options.Add(new { @ref = Add(new(location, Generation, center, currentMenu, "menu", Action: MenuSignature(currentMenu), Option: i), true), label = dialogue.responses[i].responseText });
                 else options.Add(new { @ref = Add(new(location, Generation, center, currentMenu, "menu", Action: MenuSignature(currentMenu), Option: -1), true), label = "继续" });
-                menu = new { type = currentMenu.GetType().Name, text = dialogue.getCurrentString(), options };
+                menu = new { type = currentMenu.GetType().Name, identity = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(currentMenu).ToString(), text = dialogue.getCurrentString(), options };
             }
-            else menu = new { type = currentMenu.GetType().Name, text = "当前菜单暂不支持自动操作。", options };
+            else menu = new { type = currentMenu.GetType().Name, identity = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(currentMenu).ToString(), text = "当前菜单暂不支持自动操作。", options };
         }
         snapshots.Enqueue(keys);
         while (snapshots.Count > 16) foreach (var key in snapshots.Dequeue()) references.Remove(key);
@@ -151,10 +166,11 @@ public sealed class Observations
             if (v.item is WateringCan can) { entry["water"] = can.WaterLeft; entry["waterCapacity"] = can.waterCanMax; }
             return entry;
         }).ToArray();
-        return new { mode = "game", kind = "snapshot", snapshotId = id, instanceId = InstanceId, saveGeneration = Generation, location = location.NameOrUniqueName,
+        return new { mode = "game", kind = "snapshot", snapshotId = id, instanceId = InstanceId, saveGeneration = Generation,
+            saveId = Game1.uniqueIDForThisGame.ToString(), playerId = Game1.player.UniqueMultiplayerID.ToString(), location = location.NameOrUniqueName,
             date = new { season = Game1.currentSeason, day = Game1.dayOfMonth, year = Game1.year }, time = Game1.timeOfDay,
             player = new { position = Tile(center), energy = Game1.player.Stamina, maxEnergy = Game1.player.MaxStamina, selectedSlot = Game1.player.CurrentToolIndex, canMove = Game1.player.CanMove, money = Game1.player.Money, maxItems = Game1.player.MaxItems },
-            inventory, observation = new { radius, center = Tile(center), truncated = center.X - radius > 0 || center.Y - radius > 0 || center.X + radius < width - 1 || center.Y + radius < height - 1, width, height }, entities, menu };
+            inventory, trajectory = positions.ToArray(), observation = new { radius, center = Tile(center), truncated = center.X - radius > 0 || center.Y - radius > 0 || center.X + radius < width - 1 || center.Y + radius < height - 1, width, height }, entities, menu };
     }
     public object Result(string detail, bool changed = true) => new { kind = "action", location = Game1.currentLocation.NameOrUniqueName, position = Tile(Position), changed, detail, snapshot = Snapshot() };
 }

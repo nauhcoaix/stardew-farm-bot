@@ -69,7 +69,7 @@ class FakeFarmer:
     till = plant = chop_trees = unchanged
 
     async def water_crops(self, snap, **kwargs):
-        self.b.state["entities"][0].update(watered=True, needsWater=False)
+        getattr(self.b, "raw", self.b).state["entities"][0].update(watered=True, needsWater=False)
         self.last_watered = 1
         self.worked.set()
         return await self.snap()
@@ -106,6 +106,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             return {"steps": []}
         brain = WorkPlanner(model, log=lambda text: None)
         bridge = WaterBridge()
+        brain.observe(bridge.state)
+        brain.set_steps([{"action": "water", "arg": {"limit": 7}}])
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.multiple(service, Bridge=lambda: bridge, Farmer=Farmer,
                                DEV=tmp, INBOX=tmp + "/inbox", OUTBOX=tmp + "/outbox",
@@ -146,7 +148,10 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(service.planner, "ask", slow_model), \
                 patch.object(service.planner, "next_action", slow_model), \
                 patch.object(service.planner, "plan_work", slow_model, create=True):
-            task = asyncio.create_task(service.run_once())
+            brain = WorkPlanner(slow_model, log=lambda text: None)
+            brain.observe(snapshot())
+            brain.set_steps([{"action": "water"}])
+            task = asyncio.create_task(service.run_once(brain))
             try:
                 await asyncio.wait_for(worked.wait(), 0.4)
                 self.assertFalse(release.is_set())
@@ -154,8 +159,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
                 await asyncio.wait_for(task, 3)
+                brain.close()
 
-    async def test_player_task_planning_does_not_stop_current_farm_work(self):
+    async def test_new_player_intent_does_not_inject_unselected_local_farm_work(self):
         release = threading.Event()
         started = threading.Event()
         calls = []
@@ -180,7 +186,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 '{"cmd":"task","arg":"今天帮我浇水"}', encoding="utf-8")
             try:
                 await asyncio.wait_for(service.run_once(brain), 0.4)
-                self.assertTrue(worked.is_set())
+                self.assertFalse(worked.is_set(), "模型未选择动作时不按固定农务兜底")
                 self.assertTrue(started.is_set())
                 self.assertEqual(calls, ["今天帮我浇水"])
             finally:
@@ -252,7 +258,7 @@ class PlannerTests(unittest.TestCase):
         self.settle(brain, snap)
         snap["entities"][0].update(watered=True, needsWater=False)
         snap["inventory"].append({"slot": 2, "name": "防风草", "count": 1})
-        action = brain.take_action(lambda a: service.action_ready(snap, a, brain.daily))
+        action = brain.take_action(lambda a: service.action_ready(snap, a))
         self.assertEqual(action["action"], "sell")
 
     def test_remaining_last_step_triggers_prefetch(self):
@@ -288,7 +294,7 @@ class PlannerTests(unittest.TestCase):
             # 等待工作线程返回，但尚不把结果交给规划器。
             brain._pending[0].result(timeout=1)
             brain.poll(new, "new-state")
-            self.assertFalse(brain.daily["chop"])
+            self.assertEqual(brain.goal, "")
             self.assertEqual(brain.queued, 0)
         finally:
             release.set()
@@ -324,7 +330,6 @@ class PlannerTests(unittest.TestCase):
         finally:
             release.set()
         self.settle(brain, snap)
-        self.assertFalse(brain.daily["chop"])
         self.assertEqual(brain.take_action(lambda a: True)["action"], "water")
 
     def test_failed_model_uses_backoff_without_queueing_more_threads(self):
@@ -340,7 +345,7 @@ class PlannerTests(unittest.TestCase):
         for _ in range(10):
             brain.poll(snap, "state")
         self.assertEqual(len(calls), 1)
-        self.assertEqual(service.local_action(snap, brain)["action"], "water")
+        self.assertIsNone(service.local_action(snap, brain), "模型离线不能改成预设日程")
 
     def test_chunk_is_requeued_until_work_is_complete(self):
         reports = []
@@ -354,7 +359,8 @@ class PlannerTests(unittest.TestCase):
         step = brain.take_action(lambda a: True)
         brain.complete(step, True)
         self.assertEqual(brain.queued, 0)
-        self.assertIn("有效完成1步", reports[-1])
+        self.assertEqual(brain._completed, 1)
+        self.assertEqual(reports, [], "技能片段完成不冒充玩家总目标完成")
 
     def test_no_progress_enters_cooldown_and_different_task_can_run(self):
         brain = self.make_brain(lambda *args: None)
@@ -362,13 +368,57 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(brain.allowed("water"))
         self.assertTrue(brain.allowed("harvest"))
 
+    def test_failure_discards_planning_already_in_flight(self):
+        release, started = threading.Event(), threading.Event()
+        def model(*args):
+            started.set()
+            release.wait(2)
+            return {"steps": [{"action": "chop"}], "goal": "失败前的旧规划"}
+        brain = self.make_brain(model, clock=lambda: 0)
+        snap = snapshot()
+        brain.observe(snap)
+        brain.set_steps([{"action": "water"}])
+        try:
+            brain.poll(snap, "state-before-failure")
+            self.assertTrue(started.wait(1))
+            action = brain.take_action(lambda a: True)
+            brain.complete(action, False)
+            release.set()
+            brain._pending[0].result(timeout=1)
+            brain.poll(snap, "state-after-failure")
+            self.assertEqual(brain.queued, 0)
+            self.assertEqual(brain.goal, "")
+            self.assertFalse(brain.thinking)
+        finally:
+            release.set()
+
+    def test_unavailable_step_invalidates_pending_prefetch(self):
+        release, started = threading.Event(), threading.Event()
+        def model(*args):
+            started.set()
+            release.wait(2)
+            return {"steps": [{"action": "chop"}]}
+        brain = self.make_brain(model, clock=lambda: 0)
+        snap = snapshot()
+        brain.observe(snap)
+        brain.set_steps([{"action": "water"}])
+        try:
+            brain.poll(snap, "state-before-menu-change")
+            self.assertTrue(started.wait(1))
+            self.assertIsNone(brain.take_action(lambda a: False))
+            release.set()
+            brain._pending[0].result(timeout=1)
+            brain.poll(snap, "state-with-menu")
+            self.assertEqual(brain.queued, 0)
+            self.assertFalse(brain.thinking)
+        finally:
+            release.set()
+
     def test_model_cannot_send_arbitrary_commands_or_stale_refs(self):
         steps = clean_steps([{"action": ["water"]}, {"action": "warp"},
                              {"action": "water", "arg": {"ref": "@s1:e1"}},
                              {"action": "clear", "arg": {"limit": 999, "min_energy": -1}}])
-        self.assertEqual([s["action"] for s in steps], ["water", "clear"])
-        self.assertEqual(steps[0]["arg"], {})
-        self.assertEqual(steps[1]["arg"], {"limit": 24, "min_energy": 40})
+        self.assertEqual(steps, [], "未知命令、原始ref和越界参数应整体拒绝")
 
     def test_zero_purchase_budget_is_respected(self):
         snap = snapshot()
