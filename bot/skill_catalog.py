@@ -93,6 +93,8 @@ def clean_steps(steps):
                     arg[key] = value[:12]
                 elif key == "seconds":
                     arg[key] = max(0.1, min(3.0, float(value)))
+            if name == "craft" and not arg.get("item"):
+                continue
             if name == "memory" and arg.get("op", "recall") == "remember" and not arg.get("text"):
                 continue
             out.append({"action": name, "arg": arg, "reason": str(step.get("reason") or "模型选择")[:300], "source": "model"})
