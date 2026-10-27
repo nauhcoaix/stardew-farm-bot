@@ -31,7 +31,7 @@ public static class Protocol
         {
             "reset" => Array.Empty<string>(),
                 "hello" or "snapshot" or "status" or "screenshot" or "stop" or "menudump" => r.Command == "snapshot" ? new[] { "radius" } : r.Command == "stop" ? new[] { "actionId" } : Array.Empty<string>(),
-            "menuclick" or "menuclickinv" => new[] { "x", "y" }, "shopbuy" => new[] { "index", "qty" }, "placechest" => new[] { "x", "y" }, "chestput" => new[] { "x", "y", "slot" }, "ship" => new[] { "slot" }, "bin" or "forceunlock" => Array.Empty<string>(), "warp" => new[] { "location", "x", "y" }, "chestget" => new[] { "x", "y", "name" }, "menuclose" => Array.Empty<string>(), "move" => new[] { "near", "tile" }, "select" => new[] { "slot" }, "use" or "interact" or "menu" => new[] { "target" },
+            "menuclick" or "menuclickinv" => new[] { "x", "y" }, "shopbuy" => new[] { "index", "qty" }, "placechest" => new[] { "x", "y" }, "chestput" => new[] { "x", "y", "slot" }, "ship" => new[] { "slot" }, "bin" or "forceunlock" => Array.Empty<string>(), "warp" => new[] { "location", "x", "y" }, "chestget" => new[] { "x", "y", "name" }, "menuclose" => Array.Empty<string>(), "craft" => new[] { "item", "count" }, "recipes" => new[] { "limit", "learned" }, "move" => new[] { "near", "tile" }, "select" => new[] { "slot" }, "use" or "interact" or "menu" => new[] { "target" },
             _ => throw new ActionFault("UNSUPPORTED", "未知命令。")
         };
         if (r.Args.EnumerateObject().Any(p => !allowed.Contains(p.Name))) throw new ActionFault("INVALID_ARGUMENT", "请求包含未知参数。");

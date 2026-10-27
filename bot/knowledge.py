@@ -73,6 +73,10 @@ def digest(max_lines=28):
             gift.get("location"), gift.get("count"), gift.get("item"),
             "只此一次" if gift.get("once") else "可重复"))
 
+    craft = data.get("crafting") or {}
+    if craft.get("examples"):
+        out.append("可以制造：%s（%s）" % ("、".join(craft["examples"]), craft.get("note") or ""))
+
     for rule in data.get("rules") or []:
         out.append("规则：%s" % rule)
 

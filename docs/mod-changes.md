@@ -136,3 +136,17 @@ async def reset(self):
 
 `farm_service.py` 的策略：连续跑满 `FARM_RESET_HOURS`（默认 8 小时）就自动清零一次，
 也可以在收件箱里发 `{"cmd": "reset"}` 手动清。
+
+## 制造（craft / recipes）
+
+mod 侧新增：
+- `craft` 命令：直接解析 `Data/CraftingRecipes`，扣材料 + 产出（不弹菜单）
+- `recipes` 命令：列出配方（key / 中文名 / 材料 / 是否已学）
+
+编译（需要 .NET SDK）：
+``powershell
+D:\dotnet-sdk\dotnet.exe build -c Release -p:GamePath="D:\1\steamapps\common\Stardew Valley"
+# 产物复制到 <游戏>\Mods\AgentStardew\AgentStardew.dll
+``
+
+bot 侧：`craft` / `recipes` 两个技能；`knowledge.json` 里配方名必须用游戏中文名（箱子叫"宝箱"）。

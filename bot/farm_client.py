@@ -100,6 +100,14 @@ class Bridge:
         """清空 mod 的动作记录（幂等表），防止攒到 20 万条后 OUTPUT_LIMIT。"""
         return await self.request("reset", {}, timeout_ms=10000)
 
+    async def recipes(self, limit=80, learned_only=False):
+        """列出可制作配方（配方名/材料/是否已学会）。"""
+        return await self.request("recipes", {"limit": int(limit), "learned": bool(learned_only)})
+
+    async def craft(self, item, count=1):
+        """用已学配方制作物品；失败会返回原因（未知配方/没学会/材料不足）。"""
+        return await self.request("craft", {"item": str(item), "count": int(count)})
+
     async def menu(self, ref):
         return await self.request("menu", {"target": ref})
 

@@ -91,6 +91,17 @@ public sealed class ModEntry : Mod
                 {
                     Send(pending, Response.Ok(r, MenuDump.Warp(Protocol.Text(r.Args, "location"), Protocol.Integer(r.Args, "x"), Protocol.Integer(r.Args, "y")))); continue;
                 }
+                if (r.Command == "recipes")
+                {
+                    Send(pending, Response.Ok(r, Crafting.ListRecipes(
+                        r.Args.TryGetProperty("limit", out _) ? Protocol.Integer(r.Args, "limit") : 80,
+                        r.Args.TryGetProperty("learned", out var lr) && lr.ValueKind == System.Text.Json.JsonValueKind.True))); continue;
+                }
+                if (r.Command == "craft")
+                {
+                    Send(pending, Response.Ok(r, Crafting.Craft(Protocol.Text(r.Args, "item"),
+                        r.Args.TryGetProperty("count", out _) ? Protocol.Integer(r.Args, "count") : 1))); continue;
+                }
                 if (r.Command == "forceunlock")
                 {
                     Send(pending, Response.Ok(r, MenuDump.ForceUnlock())); continue;

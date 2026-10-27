@@ -491,6 +491,25 @@ class SkillRuntime:
         elif name == "harvest":
             snap = await f.harvest(snap, limit=min(3, arg.get("limit", 3)))
             done = f.last_harvest
+        elif name == "recipes":
+            limit = max(1, min(80, int(arg.get("limit") or 20)))
+            data = await b.recipes(limit=limit, learned_only=bool(arg.get("learned", True)))
+            items = data.get("items") or []
+            names = "、".join("%s(%s)" % (i.get("display"), i.get("key")) for i in items[:12])
+            return snap, success("已学会配方 %d 个：%s" % (data.get("count", len(items)), names),
+                                 progress=False, output=data)
+        elif name == "craft":
+            item = str(arg.get("item") or "").strip()
+            if not item:
+                raise ValueError("craft 需要 item（配方名）")
+            count = max(1, min(10, int(arg.get("count") or 1)))
+            result = await b.craft(item, count)
+            ok = bool(result.get("ok"))
+            detail = str(result.get("reason") or ("制作了 %d 个 %s" % (result.get("crafted", 0), item)))
+            res = success("%s：%s" % (item, detail), progress=ok, output=result)
+            res["repeat"] = ok and count > (result.get("crafted") or 0)
+            res["remaining_arg"] = dict(arg, count=max(1, count - int(result.get("crafted") or 0)))
+            return snap, res
         elif name == "chop":
             snap = await f.chop_trees(snap, want_wood=None, max_swings=min(3, arg.get("limit", 3)))
             done = f.last_chops

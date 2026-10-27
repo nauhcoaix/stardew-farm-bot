@@ -20,6 +20,8 @@ DEFINITIONS = {
     "harvest": ("收获成熟作物；不会自动补种或卖掉", {"limit": "1..24，默认3"}),
     "water": ("浇已观察的缺水地块；水不够时反馈，不自动寻找固定水源", {"limit": "1..24，默认3"}),
     "till_plant": ("明确委托一段开垦播种；每段最多3格，不固定农田坐标", {"limit": "1..24，默认3"}),
+    "craft": ("用已学配方制作物品（背包/工具/设施）；材料不足会返回缺什么", {"item": "配方名，如 宝箱", "count": "1..10，默认1"}),
+    "recipes": ("列出已学/全部配方（名字和材料），用来确认配方怎么写", {"limit": "1..80，默认20"}),
     "clear": ("清理模型委托的障碍，会改变地形并消耗资源", {"limit": "1..24，默认3", "min_energy": "15..270", "target": "障碍ID，可选"}),
     "chop": ("委托最多3次砍树动作，保留游戏血量验证", {"limit": "1..3"}),
     "buy_seeds": ("在已经打开的商店中购买指定商品，不自动去固定商店", {"index": "商店实际商品index", "item": "期望商品名称，用于复核", "qty": "1..20"}),
@@ -59,7 +61,7 @@ def clean_steps(steps):
         return []
     out = []
     text_fields = {"target", "candidate", "location", "to", "query", "kind", "text", "question", "item"}
-    ranges = {"x": (0, 1000), "y": (0, 1000), "slot": (0, 35), "index": (0, 1000), "steps": (1, 24),
+    ranges = {"x": (0, 1000), "y": (0, 1000), "slot": (0, 35), "index": (0, 1000), "steps": (1, 24), "count": (1, 10),
               "limit": (1, 30), "qty": (1, 20), "min_energy": (15, 270), "radius": (1, 16), "max_seconds": (10, 120)}
     for step in steps[:6]:
         if not isinstance(step, dict) or not isinstance(step.get("action"), str) or step["action"] not in ACTIONS:
@@ -107,7 +109,7 @@ def available(name, snap, arg=None, memory=None):
     menu = snap.get("menu") or {}
     tool = lambda t: any(i.get("tool") == t for i in inv)
     target = next((e for e in es if target_id(snap.get("location"), e) == arg.get("target")), None)
-    if name in ("memory", "observe", "wait"):
+    if name in ("memory", "observe", "wait", "recipes", "craft"):
         return True, ""
     if name == "menu":
         return bool(menu.get("options")), "需要当前菜单提供的可选项"
