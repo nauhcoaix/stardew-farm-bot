@@ -168,7 +168,19 @@ class WorkPlanner:
                                {"status": "blocked", "progress": False, "detail": "派发前复核：技能不可用或同一现场已失败"})
             self._revision += 1  # 正在预取的规划仍基于旧前提，不可再接回队列。
             self._retry_at = self.clock() + 1
-            self.log("跳过不可用的已选技能：%s" % action["action"])
+            try:
+                from skill_catalog import available as _avail
+                _ok, _why = _avail(action["action"], self.memory.current, action.get("arg"), memory=self.memory)
+            except Exception:
+                _ok, _why = True, ""
+            if not _ok and _why:
+                self.log("跳过不可用的已选技能：%s（%s）" % (action["action"], _why))
+                try:
+                    self.memory.note("技能 %s 现在不可用：%s" % (action["action"], _why), snap=self.memory.current)
+                except Exception:
+                    pass
+            else:
+                self.log("跳过不可用的已选技能：%s" % action["action"])
         return None
 
     def has_action(self, eligible):

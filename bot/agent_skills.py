@@ -67,6 +67,20 @@ class SkillRuntime:
             base["landmarks"] = self.memory.landmark_digest(snap)
         except Exception:
             base["landmarks"] = []
+        # 直接给"该浇哪几格"，别让模型先 memory/observe 去找
+        try:
+            targets = []
+            for e in snap.get("entities") or []:
+                if e.get("kind") == "soil" and not e.get("watered") and (e.get("crop") or e.get("tilled")):
+                    t = e.get("tile") or {}
+                    targets.append({"x": t.get("x"), "y": t.get("y"), "why": "视野内缺水"})
+            for (x, y, _crop) in self.memory.unwatered_planted(snap)[:6]:
+                if not any(t["x"] == x and t["y"] == y for t in targets):
+                    targets.append({"x": x, "y": y, "why": "记忆里已种未浇"})
+            base["water_targets"] = targets[:8]
+            base["seeds"] = int(self.memory.facts(snap).get("seeds", 0))
+        except Exception:
+            base["water_targets"], base["seeds"] = [], 0
         try:
             base["schedule"] = self.memory.schedule(snap)
             base["current_stage"] = self.memory.current_stage(snap)
