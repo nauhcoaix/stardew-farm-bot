@@ -495,10 +495,49 @@ class SkillRuntime:
                     pass
                 if remembered:
                     target = remembered[0]
+                    key = (target[0], target[1])
+                    misses = getattr(self, "_water_misses", None)
+                    if misses is None:
+                        misses = self._water_misses = {}
+                    p0 = position(snap)
+                    # 这格现在就在视野里、但不是要浇的土 -> 记忆过期，直接清掉
+                    here = next((e for e in snap.get("entities") or []
+                                 if (e.get("tile") or {}).get("x") == key[0]
+                                 and (e.get("tile") or {}).get("y") == key[1]), None)
+                    if here is not None and not (here.get("kind") == "soil" and not here.get("watered")
+                                                 and (here.get("crop") or here.get("tilled"))):
+                        self.log("  记忆里的待浇格 %s 现在不是待浇的耕地，清掉这条记录" % (key,))
+                        try:
+                            self.memory.forget_planted(snap, key)
+                        except Exception:
+                            pass
+                        misses.pop(key, None)
+                        res = success("清掉过期的待浇记录 %s" % (key,), progress=False)
+                        res["remaining_arg"] = dict(arg)
+                        return snap, res
+                    if misses.get(key, 0) >= 3:
+                        self.log("  %s 连 3 次没浇成，清掉这条记录" % (key,))
+                        try:
+                            self.memory.forget_planted(snap, key)
+                        except Exception:
+                            pass
+                        misses.pop(key, None)
+                        res = success("放弃浇不到的 %s（连 3 次没成功，已清记录）" % (key,), progress=False)
+                        res["remaining_arg"] = dict(arg)
+                        return snap, res
                     self.log("  视野里没水可浇，按记忆去 (%d,%d)（共 %d 格待浇）" % (
-                        target[0], target[1], len(remembered)))
-                    moved = await self._move(b, snap, target[0], target[1])
+                        key[0], key[1], len(remembered)))
+                    moved = await self._move(b, snap, key[0], key[1], steps=arg.get("steps"))
                     snap = moved[0]
+                    p1 = position(snap)
+                    advanced = (p1.get("x"), p1.get("y")) != (p0.get("x"), p0.get("y"))
+                    if not advanced:
+                        misses[key] = misses.get(key, 0) + 1
+                        self.log("  朝 %s 走没进展（第 %d 次），不再重复" % (key, misses[key]))
+                        res = success("去浇 %s 没走动（第 %d 次）" % (key, misses[key]),
+                                      progress=False)
+                        res["remaining_arg"] = dict(arg)
+                        return snap, res
                     res = success("按记忆去浇已种未浇的地（%d 格待浇）" % len(remembered), repeat=True)
                     res["remaining_arg"] = dict(arg)
                     return snap, res

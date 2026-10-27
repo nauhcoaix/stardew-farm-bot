@@ -367,6 +367,15 @@ class MemoryStore:
                 n += cur.rowcount
         return n
 
+    def forget_planted(self, snap, tile):
+        """把一格从"已种作物"里删掉（记忆和现实对不上时用）。"""
+        scope = save_key(snap)
+        loc = snap.get("location")
+        with self.db:
+            cur = self.db.execute("DELETE FROM planted WHERE save_id=? AND location=? AND x=? AND y=?",
+                                  (scope, loc, int(tile[0]), int(tile[1])))
+        return cur.rowcount
+
     def unwatered_planted(self, snap=None, location=None):
         """今天还没浇的已种作物（按游戏日判断；老数据没有日期时按"从未浇过"算）。"""
         snap = snap or self.current
