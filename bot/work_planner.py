@@ -180,7 +180,7 @@ class WorkPlanner:
                 except Exception:
                     pass
             else:
-                self.log("跳过不可用的已选技能：%s" % action["action"])
+                self.log("跳过：%s 在同一现场刚失败过（等冷却或换目标）" % action["action"])
         return None
 
     def has_action(self, eligible):

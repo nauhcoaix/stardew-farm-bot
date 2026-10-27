@@ -1095,6 +1095,9 @@ class MemoryStore:
         if action.get("action") in ("move", "travel", "explore") and arg.get("mode", "path") == "path":
             extra = {"origin": position(snap), "known_tiles": len(self._tiles.get((save_key(snap), snap.get("location")), {})),
                      "connections": [(e["from"], e["to"], e["confirmed"]) for e in self.links(snap)]}
+        if action.get("action") in ("move", "explore"):
+            # 坐标必须进指纹：否则不同目标共用一份指纹，失败一次后所有移动都被拦
+            extra["dest"] = [arg.get("x"), arg.get("y"), arg.get("candidate")]
         if action.get("action") == "use" or (action.get("action") == "explore" and arg.get("skill") == "use"):
             slot = arg.get("slot", (snap.get("player") or {}).get("selectedSlot"))
             item = next((i for i in snap.get("inventory") or [] if i.get("slot") == slot), {})

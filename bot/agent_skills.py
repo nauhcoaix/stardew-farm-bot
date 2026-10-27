@@ -147,7 +147,26 @@ class SkillRuntime:
                     path = steps
                     self.log("记忆里没路线，按现场可通行格算出 %d 步" % len(steps))
         if path is None:
-            raise ValueError("没有已观察的可通行路径；请从探索候选选择前沿，不猜路线")
+            # 最后兜底：朝目标迈一格（用现场可通行格判断，不猜远处）
+            import farm_layout as _fl
+            grid = _fl.passable_grid(snap)
+            pos = (snap.get("player") or {}).get("position") or {}
+            start = (pos.get("x"), pos.get("y"))
+            goal = (int(x), int(y))
+            candidates = []
+            # 只对"近处目标"贪心迈步：远处不猜路线（安全边界）
+            if abs(start[0] - goal[0]) + abs(start[1] - goal[1]) <= 6:
+                for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+                    nxt = (start[0] + dx, start[1] + dy)
+                    if nxt in grid:
+                        d = abs(nxt[0] - goal[0]) + abs(nxt[1] - goal[1])
+                        candidates.append((d, nxt))
+            if candidates:
+                _, step = min(candidates)
+                self.log("  没有完整路径，朝目标迈一格 %s" % (step,))
+                path = [step]
+            else:
+                raise ValueError("没有已观察的可通行路径；请从探索候选选择前沿，不猜路线")
         try:
             limit = int(steps) if steps is not None else self.DEFAULT_STEPS
         except (TypeError, ValueError):
