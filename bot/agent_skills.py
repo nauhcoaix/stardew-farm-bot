@@ -88,6 +88,27 @@ class SkillRuntime:
         """走一步棋：本次最多走 steps 格（由模型决定，1..24；不给就按整段路径）。"""
         path = path_to(snap, self.memory, (x, y))
         if path is None:
+            # 记忆里没有路线时，用当前快照的可通行格自己算一条（城里的路上就能用）
+            import farm_layout as _fl
+            grid = _fl.passable_grid(snap)
+            pos = (snap.get("player") or {}).get("position") or {}
+            start = (pos.get("x"), pos.get("y"))
+            if start in grid:
+                prev = _fl.bfs_prev(grid, start)
+                goal = (int(x), int(y))
+                if goal not in prev:
+                    # 目标不在现场可达范围：不猜，交回上层去探索
+                    goal = None
+                steps = []
+                cur = goal
+                while cur is not None and cur != start:
+                    steps.append(cur)
+                    cur = prev[cur]
+                steps.reverse()
+                if steps:
+                    path = steps
+                    self.log("记忆里没路线，按现场可通行格算出 %d 步" % len(steps))
+        if path is None:
             raise ValueError("没有已观察的可通行路径；请从探索候选选择前沿，不猜路线")
         try:
             limit = int(steps) if steps is not None else self.DEFAULT_STEPS

@@ -36,6 +36,7 @@ class WorkPlanner:
         self._mission = None
         self._report_pending = False
         self._completed = self._skipped = 0
+        self._idle_plans = 0
         self.closed = False
 
     @property
@@ -111,6 +112,33 @@ class WorkPlanner:
                 if isinstance(reflection, str) and reflection:
                     self.memory.note(reflection, snap=snap)
                 self.log("模型选择%d项技能，当前小目标：%s（%.1f秒）" % (len(steps), self.goal, self.clock() - started))
+                # 模型没有"报告"技能：当它只想汇报/已收尾（选的步骤全是 observe/memory 之类）时，
+                # 直接把完成的答复发出去并结束这个任务，免得反复空转。
+                idle_actions = {"observe", "memory", "select", "wait"}
+                actions = [str(s.get("action") or "") for s in steps]
+                if steps and all(a in idle_actions for a in actions):
+                    self._idle_plans += 1
+                else:
+                    self._idle_plans = 0
+                # 连续 4 轮都只有 observe/memory：目标不可达，汇报后放下任务，别无限空转
+                if self._mission and self._idle_plans >= 4:
+                    self.report("卡住了：任务「%s」连 4 轮只观察不动作（%s）。需要更具体的坐标或路线。"
+                                % (self._mission, self.goal))
+                    self._mission = None
+                    self._report_pending = False
+                    self._idle_plans = 0
+                    self.interrupt()
+                    self.log("连续空转 4 轮，已汇报并放下任务")
+                    return
+                wants_report = any(k in (self.goal or "") for k in ("报告", "汇报", "报一声", "已到达", "完成", "结束"))
+                if self._mission and self._report_pending and wants_report and all(a in idle_actions for a in actions):
+                    text = str(result.get("reply") or "").strip() or self.goal
+                    self.report("任务「%s」：%s" % (self._mission, text[:300]))
+                    self._mission = None
+                    self._report_pending = False
+                    self.interrupt()
+                    self.log("任务完成并已汇报，回到自主行动")
+                    return
                 if self._mission and self._report_pending and result.get("reply"):
                     self.report("任务「%s」当前规划：%s" % (self._mission, str(result["reply"])[:300]))
                     self._report_pending = False
