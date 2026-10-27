@@ -215,7 +215,7 @@ class MemoryStore:
                 if key in seen:
                     continue
                 d = abs(r["x"] - pos["x"]) + abs(r["y"] - pos["y"])
-                if d <= 14:            # 只敢在"确定在视野内"时判定消失
+                if d <= 8:             # 只在真正近处（8 格内）才敢判定消失
                     self.db.execute(
                         "UPDATE landmarks SET gone=1, seen_ts=? WHERE save_id=? AND location=? AND kind=? AND x=? AND y=?",
                         (self.clock(), scope, loc, r["kind"], r["x"], r["y"]))

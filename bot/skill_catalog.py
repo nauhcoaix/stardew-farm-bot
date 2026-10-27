@@ -99,7 +99,7 @@ def clean_steps(steps):
     return out
 
 
-def available(name, snap, arg=None):
+def available(name, snap, arg=None, memory=None):
     if name not in DEFINITIONS:
         return False, "技能不在能力目录中"
     arg = arg or {}
@@ -121,11 +121,22 @@ def available(name, snap, arg=None):
         return False, "人物正在动画、过场或使用工具"
     if name in ("use", "till", "plant", "water", "clear", "chop", "till_plant") and float(p.get("energy") or 0) < 15:
         return False, "体力不足以继续耗体力的技能"
+    facts = {}
+    if memory is not None:
+        try:
+            facts = memory.facts(snap)
+        except Exception:
+            facts = {}
     if name == "water":
-        return any(i.get("tool") == "WateringCan" and (i.get("water") or 0) > 0 for i in inv) and any(
-            e.get("kind") == "soil" and not e.get("watered") and (e.get("crop") or e.get("tilled")) for e in es), "需要有水的水壶和缺水地块"
+        can = any(i.get("tool") == "WateringCan" and (i.get("water") or 0) > 0 for i in inv)
+        visible = any(e.get("kind") == "soil" and not e.get("watered")
+                      and (e.get("crop") or e.get("tilled")) for e in es)
+        remembered = (facts.get("planted_unwatered", 0) or 0) > 0 or (facts.get("crops_thirsty", 0) or 0) > 0
+        return can and (visible or remembered), "需要有水的水壶和待浇地（视野内或记忆里）"
     if name == "harvest":
-        return any(e.get("crop") and (e.get("harvestable") or e.get("ready")) for e in es), "没有已观察到的成熟作物"
+        visible = any(e.get("crop") and (e.get("harvestable") or e.get("ready")) for e in es)
+        remembered = (facts.get("harvestable", 0) or 0) > 0
+        return visible or remembered, "没有成熟作物（视野内或记忆里）"
     if name in ("plant", "till_plant"):
         seeds = any(i.get("category") == -74 or "种子" in (i.get("name") or "") or "Seeds" in (i.get("name") or "") for i in inv)
         return seeds and any((e.get("tilled") and not e.get("crop")) or (name == "till_plant" and e.get("diggable") and tool("Hoe")) for e in es), "需要种子和可播种土地"
@@ -137,7 +148,14 @@ def available(name, snap, arg=None):
         return tool("Axe") and any(e.get("name") in ("Tree", "树") for e in es), "需要斧头和已观察树木"
     if name == "clear":
         from farmer import CLEAR_TOOLS, tool_slot
-        return any(tool_slot(snap, CLEAR_TOOLS[e["name"]]) for e in es if e.get("name") in CLEAR_TOOLS), "需要已观察障碍与对应工具"
+        has_tool = any(tool_slot(snap, CLEAR_TOOLS[e["name"]]) for e in es if e.get("name") in CLEAR_TOOLS)
+        has_tool = has_tool or any(tool_slot(snap, t) for t in set(CLEAR_TOOLS.values()))
+        if not has_tool:
+            return False, "需要对应工具（斧头/镐/镰刀）"
+        if any(e.get("name") in CLEAR_TOOLS for e in es):
+            return True, ""
+        remembered = (facts.get("obstacles_known", 0) or 0) > 0
+        return remembered, "没有障碍（视野内或记忆里）"
     if name == "select":
         return bool(inv), "背包没有可选物品"
     if name == "sleep":
@@ -148,8 +166,13 @@ def available(name, snap, arg=None):
         return False, "先打开商店并观察商品index；不会预设路线"
     if name == "sell":
         return snap.get("location") == "Farm", "当前桥的发货接口仅在农场提供"
-    if arg.get("target") and not target and name != "move":
+    if arg.get("target") and not target and name not in ("move", "explore"):
         return False, "目标已不在当前观察中，需重新观察或走近"
+    if name == "move" and arg.get("target") and not target:
+        return False, "这个目标ID已经不在了；可以直接给坐标 x/y，或先 observe"
+    if name == "explore" and arg.get("mode", "path") == "path" and not arg.get("x") and not arg.get("candidate"):
+        remembered = (facts.get("obstacles_known", 0) or 0) > 0 or (facts.get("water_known", 0) or 0) > 0
+        return remembered, "没有探索候选；给坐标或先记录地标"
     return True, ""
 
 

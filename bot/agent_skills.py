@@ -49,7 +49,7 @@ class SkillRuntime:
         self._last_observation = None
 
     def ready(self, action, snap):
-        allowed, _ = available(action["action"], snap, action.get("arg"))
+        allowed, _ = available(action["action"], snap, action.get("arg"), memory=self.memory)
         return allowed and not self.memory.blocked(action, snap)
 
     def context(self, snap, objective=""):
@@ -442,6 +442,19 @@ class SkillRuntime:
                 chosen = next((c for c in candidates(snap, self.memory) if c["id"] == arg.get("candidate") and c["mode"] == "path"), None)
                 x, y = (chosen["x"], chosen["y"]) if chosen else (arg.get("x"), arg.get("y"))
                 if x is None or y is None:
+                    # 没有候选也没有坐标：朝最近的已知地标走（记忆里的粗略全图）
+                    target = None
+                    try:
+                        spots = [t for k in ("obstacle", "water", "chest")
+                                 for t in self.memory.landmarks(snap, kind=k)]
+                        p = position(snap)
+                        if spots:
+                            target = min(spots, key=lambda t: abs(t["x"] - p["x"]) + abs(t["y"] - p["y"]))
+                    except Exception:
+                        target = None
+                    if target:
+                        self.log("  没有探索候选，朝最近地标 (%d,%d) 走" % (target["x"], target["y"]))
+                        return await self._move(b, snap, target["x"], target["y"], steps=arg.get("steps"))
                     raise ValueError("路径探索需要模型选择候选ID或已知可达坐标")
                 return await self._move(b, snap, x, y, steps=arg.get("steps"))
             identity = arg.get("target") or arg.get("candidate")
