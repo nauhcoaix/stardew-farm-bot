@@ -14,7 +14,7 @@ description: 附加模块：在星露谷里按键触发一段钓鱼（抛竿、�
 1. 单人存档、画面可操作（无菜单/事件/过场）；
 2. 背包里有 `FishingRod`，且至少一个空格（只有**完全没空位**时才会拒绝）；
 3. 站在水边，**面前 2~6 格内有可钓水面**（朝向就是抛竿方向）；
-   要往水边挪，用你自己的腿，或让农务侧代走：`{"action":"travel","arg":{"to":"Beach"}}`（区域名见 `bot/places.py`，需要已有路线 `places.route_learned`，实现见 `bot/explore.py`/`bot/route_recorder.py`）。本模块自己不走路。
+   要往水边挪，用你自己的腿，或让农务侧代走：`{"action":"travel","arg":{"to":"Beach"}}`（区域名见 `bot/places.py`，按可见出口逐跳移动 + BUSY 重试，实现在 `bot/farm_service.py` 的 `travel()`）。本模块自己不走路。
 4. 体力 ≥ 30，游戏时间 < 22:00；
 5. 若农务服务在跑，先用它的 `STOP` 停稳——同一角色不能被两套控制同时驱动。
 
