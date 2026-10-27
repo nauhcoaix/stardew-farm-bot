@@ -197,7 +197,75 @@ class SkillRuntime:
         self.log("技能 %s：%s（%s）" % (action["action"], result["status"], result.get("detail", "")))
         return snap, result
 
+    FARM_WORK = {"clear", "use", "till", "plant", "harvest", "chop", "water", "till_plant"}
+    ZONE_RADIUS = 12
+
+    def _house_zone(self, snap):
+        """农场 + 看得见农舍时，返回 (农舍格, 半径)；否则 None。"""
+        if snap.get("location") != "Farm" or not farm_layout.has_house(snap):
+            return None
+        return farm_layout.house_tile(snap), int(getattr(self, "_zone_radius", self.ZONE_RADIUS))
+
+    def _in_zone(self, snap, entity):
+        zone = self._house_zone(snap)
+        if not zone:
+            return True
+        house, radius = zone
+        t = entity.get("tile") or {}
+        return farm_layout.dist((t.get("x"), t.get("y")), house) <= radius
+
+    def _zone_snap(self, snap, pred):
+        """只保留圈内的"该技能关心的实体"，其余实体原样保留。"""
+        zone = self._house_zone(snap)
+        if not zone:
+            return snap
+        house, radius = zone
+        keep = []
+        for e in snap.get("entities") or []:
+            try:
+                relevant = bool(pred(e))
+            except Exception:
+                relevant = True
+            if not relevant:
+                keep.append(e)
+                continue
+            t = e.get("tile") or {}
+            if farm_layout.dist((t.get("x"), t.get("y")), house) <= radius:
+                keep.append(e)
+        out = dict(snap)
+        out["entities"] = keep
+        return out
+
+    def _enforce_zone(self, name, arg, snap):
+        """执行前统一把关：圈外目标一律拒绝，自动选目标的技能只留圈内候选。"""
+        if name not in self.FARM_WORK:
+            return snap
+        zone = self._house_zone(snap)
+        if not zone:
+            return snap
+        house, radius = zone
+        if arg.get("target"):
+            entity = self._target(snap, arg["target"])
+            if not self._in_zone(snap, entity):
+                t = entity.get("tile") or {}
+                raise ValueError(
+                    "目标 (%s,%s) 离农舍 %d 格，超出当前作业半径 %d；先在农舍附近干活，"
+                    "要扩圈用 explore 换个探索候选" % (t.get("x"), t.get("y"),
+                                                        farm_layout.dist((t.get("x"), t.get("y")), house), radius))
+            return snap
+        if name == "harvest":
+            return self._zone_snap(snap, lambda e: bool(e.get("crop")))
+        if name == "water":
+            return self._zone_snap(snap, lambda e: e.get("kind") == "soil" or bool(e.get("crop")))
+        if name == "chop":
+            return self._zone_snap(snap, lambda e: (e.get("kind") or "") in ("tree", "stump", "log")
+                                  or (e.get("name") or "") in ("树", "树桩", "圆木"))
+        if name == "till_plant":
+            return self._zone_snap(snap, lambda e: bool(e.get("diggable") or e.get("tilled")))
+        return snap
+
     async def _execute(self, name, arg, b, f, snap):
+        snap = self._enforce_zone(name, arg or {}, snap)
         if name == "observe":
             snap = await b.snapshot(arg.get("radius", 16))
             if snap.get("menu"):
@@ -314,57 +382,40 @@ class SkillRuntime:
             if arg.get("target"):
                 entity = self._target(snap, arg["target"])
             else:
-                import time as _time
-                p0 = position(snap)
-                house_v = farm_layout.has_house(snap)
-                d_h = farm_layout.dist((p0["x"], p0["y"]), farm_layout.house_tile(snap)) if house_v else 0
-                # 只有"在农场、看得见农舍、而且本来就在农舍附近"时才用半径策略
-                if not (snap.get("location") == "Farm" and house_v and d_h <= 40):
-                    targets = [e for e in snap.get("entities") or [] if e.get("name") in CLEAR_TOOLS
-                               and tool_slot(snap, CLEAR_TOOLS[e["name"]])]
-                    if not targets:
-                        raise ValueError("观察中没有可用工具处理的障碍")
-                    targets.sort(key=lambda e: abs(e["tile"]["x"] - p0["x"]) + abs(e["tile"]["y"] - p0["y"]))
-                    entity = targets[0]
-                else:
-                    # 农场：只清"农舍周围一圈"，清完了才把半径放大
-                    house = farm_layout.house_tile(snap)
-                    radius = int(getattr(self, "_clear_radius", 12))
-                    d_house = farm_layout.dist((p0["x"], p0["y"]), house)
+                zone = self._house_zone(snap)
+                if zone:
+                    house, radius = zone
                     ents_clear = [e for e in snap.get("entities") or [] if e.get("name") in CLEAR_TOOLS
                                   and tool_slot(snap, CLEAR_TOOLS[e["name"]])]
                     near = [e for e in ents_clear
                             if farm_layout.dist(((e.get("tile") or {}).get("x"), (e.get("tile") or {}).get("y")),
                                                 house) <= radius]
-                    if near:
-                        near.sort(key=lambda e: farm_layout.dist(
-                            ((e.get("tile") or {}).get("x"), (e.get("tile") or {}).get("y")), house))
-                        entity = near[0]
-                        if d_house > radius:
-                            # 目标在圈内但我还在圈外：先走过去，本次不清
-                            print("[农舍优先] 目标在 %d 格圈内，先走过去（离农舍 %d 格）" % (radius, d_house),
-                                  flush=True)
-                            moved = await self._move(b, snap, house[0], min(house[1] + 2, 30))
-                            snap = moved[0]
-                            res = success("先去农舍 %d 格圈内（离农舍 %d 格）" % (radius, d_house), repeat=True)
-                            res["remaining_arg"] = dict(arg)
-                            return snap, res
-                    else:
-                        # 圈内没有障碍：站在圈外就先过去看，站在圈内就把半径放大
-                        if d_house > radius:
-                            print("[农舍优先] %d 格圈内没看到障碍，先走到农舍（离农舍 %d 格）" % (radius, d_house),
-                                  flush=True)
-                            moved = await self._move(b, snap, house[0], min(house[1] + 2, 30))
-                            snap = moved[0]
-                            res = success("先去农舍 %d 格圈内看看" % radius, repeat=True)
-                            res["remaining_arg"] = dict(arg)
-                            return snap, res
-                        self._clear_radius = radius + 6
-                        print("[农舍优先] %d 格内已清完，范围放宽到 %d 格" % (radius, radius + 6), flush=True)
-                        res = success("%d 格内已清完，范围放宽到 %d" % (radius, radius + 6), repeat=True,
-                                      progress=False)
+                    if not near:
+                        # 圈内清完了：放大半径，交给下一轮继续
+                        self._zone_radius = radius + 6
+                        res = success("%d 格内已清完，作业半径放宽到 %d" % (radius, radius + 6),
+                                      repeat=True, progress=False)
                         res["remaining_arg"] = dict(arg)
                         return snap, res
+                    near.sort(key=lambda e: farm_layout.dist(
+                        ((e.get("tile") or {}).get("x"), (e.get("tile") or {}).get("y")), house))
+                    entity = near[0]
+                    p0 = position(snap)
+                    if farm_layout.dist((p0["x"], p0["y"]), house) > radius:
+                        moved = await self._move(b, snap, house[0], min(house[1] + 2, 30))
+                        snap = moved[0]
+                        res = success("先去农舍 %d 格作业圈（现在离农舍 %d 格）" % (
+                            radius, farm_layout.dist((p0["x"], p0["y"]), house)), repeat=True)
+                        res["remaining_arg"] = dict(arg)
+                        return snap, res
+                else:
+                    ents_clear = [e for e in snap.get("entities") or [] if e.get("name") in CLEAR_TOOLS
+                                  and tool_slot(snap, CLEAR_TOOLS[e["name"]])]
+                    if not ents_clear:
+                        raise ValueError("观察中没有可用工具处理的障碍")
+                    p0 = position(snap)
+                    ents_clear.sort(key=lambda e: abs(e["tile"]["x"] - p0["x"]) + abs(e["tile"]["y"] - p0["y"]))
+                    entity = ents_clear[0]
             tool = tool_slot(snap, CLEAR_TOOLS.get(entity.get("name")))
             if not tool:
                 raise ValueError("当前工具无法处理该障碍")

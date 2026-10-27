@@ -73,19 +73,28 @@ def in_plot(tile):
 NEAR_WINDOW = 6               # 只放出"最近候选 + 6 格"以内的，防止跳远
 
 
+def _is_house_entrance(e):
+    """游戏里农舍门是 kind=door / name=农舍入口，所以两个字段都要看。"""
+    kind = (e.get("kind") or "")
+    name = (e.get("name") or "")
+    if kind == "农舍入口" or name == "农舍入口":
+        return True
+    return bool(name) and "农舍" in name and kind in ("door", "building", "object", "")
+
+
 def has_house(snap):
     """快照里真的看到农舍了吗（没有就是兜底坐标，别拿它当依据）。"""
     for e in ents(snap):
-        if (e.get("kind") or e.get("name")) == "农舍入口" and e.get("tile"):
+        if _is_house_entrance(e) and e.get("tile"):
             if _tile(e)[0] is not None:
                 return True
     return False
 
 
 def house_tile(snap):
-    """农舍参照点：优先"农舍入口"实体，否则用固定坐标。"""
+    """农舍参照点：优先"农舍入口"实体（kind=door/name=农舍入口），否则用固定坐标。"""
     for e in ents(snap):
-        if (e.get("kind") or e.get("name")) == "农舍入口" and e.get("tile"):
+        if _is_house_entrance(e) and e.get("tile"):
             t = _tile(e)
             if t[0] is not None:
                 return t
