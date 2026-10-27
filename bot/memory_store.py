@@ -73,6 +73,9 @@ class MemoryStore:
         CREATE TABLE IF NOT EXISTS facts(save_id TEXT, key TEXT, value TEXT, updated_ts REAL, source TEXT,
           PRIMARY KEY(save_id, key));
         -- 任务板：带前置条件，条件不满足就 blocked（而不是反复试）
+        -- 已种下的作物：离开视野也记得，用来浇水
+        CREATE TABLE IF NOT EXISTS planted(save_id TEXT, location TEXT, x INTEGER, y INTEGER,
+          crop TEXT, planted_ts REAL, watered_ts REAL, PRIMARY KEY(save_id, location, x, y));
         CREATE TABLE IF NOT EXISTS tasks(save_id TEXT, id TEXT, text TEXT, status TEXT,
           requires TEXT, blocked_reason TEXT, updated_ts REAL, PRIMARY KEY(save_id, id));
         -- 中文 bigram 倒排索引：LIKE '%词%' 只能整词命中，这里按 2-gram 建索引
@@ -142,6 +145,39 @@ class MemoryStore:
             self.db.executemany("INSERT INTO grams VALUES(?,?,?)",
                                 [(g, event_id, scope) for g in grams])
 
+    # ---------- 已种作物（持久化，供浇水用） ----------
+    def record_planted(self, snap, tile, crop=None):
+        scope = save_key(snap)
+        loc = snap.get("location")
+        x, y = int(tile[0]), int(tile[1])
+        with self.db:
+            self.db.execute("INSERT INTO planted VALUES(?,?,?,?,?,?,?) "
+                            "ON CONFLICT(save_id,location,x,y) DO UPDATE SET planted_ts=excluded.planted_ts, "
+                            "crop=excluded.crop, watered_ts=NULL",
+                            (scope, loc, x, y, str(crop or ""), self.clock(), None))
+        return (loc, x, y)
+
+    def mark_watered(self, snap, tiles):
+        scope = save_key(snap)
+        loc = snap.get("location")
+        n = 0
+        with self.db:
+            for t in tiles:
+                cur = self.db.execute("UPDATE planted SET watered_ts=? "
+                                      "WHERE save_id=? AND location=? AND x=? AND y=?",
+                                      (self.clock(), scope, loc, int(t[0]), int(t[1])))
+                n += cur.rowcount
+        return n
+
+    def unwatered_planted(self, snap=None, location=None):
+        snap = snap or self.current
+        scope = save_key(snap)
+        loc = location or snap.get("location")
+        rows = self.db.execute(
+            "SELECT x,y,crop FROM planted WHERE save_id=? AND location=? AND watered_ts IS NULL",
+            (scope, loc)).fetchall()
+        return [(r["x"], r["y"], r["crop"]) for r in rows]
+
     # ---------- 状态板（facts）与任务板（tasks） ----------
     SEED_KEYWORDS = ("种子", "种子包", "Seeds", "seeds")
 
@@ -171,7 +207,12 @@ class MemoryStore:
         p = snap.get("player") or {}
         max_items = int(p.get("maxItems") or 12)
         used = sum(1 for i in inv if (i.get("count") or 0) > 0)
+        try:
+            unwatered = len(self.unwatered_planted(snap))
+        except Exception:
+            unwatered = 0
         facts = {
+            "planted_unwatered": unwatered,
             "seeds": seeds,
             "tilled_empty": tilled_empty,
             "tillable": tillable,
@@ -316,9 +357,14 @@ class MemoryStore:
         if watering:
             requires["crops_dry"] = ">=1"
         existing = {t["text"] for t in self.tasks(snap)}
-        if goal in existing:
-            return None
-        return self.add_task(goal, requires=requires, snap=snap)
+        tid = None
+        if goal not in existing:
+            tid = self.add_task(goal, requires=requires, snap=snap)
+        if planting:
+            pair = "给新种下的作物浇水"
+            if pair not in existing:
+                self.add_task(pair, requires={"planted_unwatered": ">=1"}, snap=snap)
+        return tid
 
     # ---------- 向量检索（bge-small-zh ONNX，可缺省降级） ----------
     @staticmethod

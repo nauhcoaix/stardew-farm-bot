@@ -46,7 +46,6 @@ REQUIRES = {
     "till": {"seeds": ">=1"},          # 没种子就别锄地（锄了也种不下去）
     "till_plant": {"seeds": ">=1"},
     "plant": {"seeds": ">=1"},
-    "water": {"crops_dry": ">=1"},
     "harvest": {"harvestable": ">=1"},
 }
 

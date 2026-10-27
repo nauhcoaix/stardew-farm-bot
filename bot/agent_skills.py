@@ -300,6 +300,19 @@ class SkillRuntime:
             return self._zone_snap(snap, lambda e: bool(e.get("diggable") or e.get("tilled")))
         return snap
 
+    @staticmethod
+    def _watered_tiles(snap):
+        """快照里已浇水的土格（用来给 planted 打标记）。"""
+        out = []
+        for e in snap.get("entities") or []:
+            if e.get("kind") == "soil" and e.get("tiled"):
+                continue
+            if e.get("kind") == "soil" and e.get("watered"):
+                t = e.get("tile") or {}
+                if t.get("x") is not None:
+                    out.append((t["x"], t["y"]))
+        return out
+
     async def _check_requires(self, name, snap):
         """按记忆里的状态事实检查技能前置条件；不满足就抛错并记下原因。"""
         req = skill_requires(name)
@@ -432,6 +445,27 @@ class SkillRuntime:
                 raise ValueError("水壶空了，模型可选择refill或探索水源")
             snap = await f.water_crops(snap, limit=count)
             done = f.last_watered
+            if done:
+                try:
+                    self.memory.mark_watered(snap, self._watered_tiles(snap))
+                except Exception:
+                    pass
+            if not done:
+                # 视野里没有待浇的格子：用记忆里"已种未浇"的坐标去找
+                remembered = []
+                try:
+                    remembered = self.memory.unwatered_planted(snap)
+                except Exception:
+                    pass
+                if remembered:
+                    target = remembered[0]
+                    self.log("  视野里没水可浇，按记忆去 (%d,%d)（共 %d 格待浇）" % (
+                        target[0], target[1], len(remembered)))
+                    moved = await self._move(b, snap, target[0], target[1])
+                    snap = moved[0]
+                    res = success("按记忆去浇已种未浇的地（%d 格待浇）" % len(remembered), repeat=True)
+                    res["remaining_arg"] = dict(arg)
+                    return snap, res
         elif name == "harvest":
             snap = await f.harvest(snap, limit=min(3, arg.get("limit", 3)))
             done = f.last_harvest
@@ -505,6 +539,24 @@ class SkillRuntime:
                 result["remaining_arg"] = arg
                 return snap, result
             snap, result = await self._execute("plant", {"target": target_id(snap.get("location"), e)}, b, f, snap)
+            if result.get("progress"):
+                try:
+                    t = e.get("tile") or {}
+                    self.memory.record_planted(snap, (t.get("x"), t.get("y")), crop=e.get("crop"))
+                    self._planted_since_water = int(getattr(self, "_planted_since_water", 0)) + 1
+                except Exception:
+                    pass
+                # 连种 3 格就顺手浇一遍，别等全部种完
+                if int(getattr(self, "_planted_since_water", 0)) >= 3:
+                    try:
+                        snap = await f.water_crops(snap, limit=self._planted_since_water)
+                        if f.last_watered:
+                            self.memory.mark_watered(snap, self._watered_tiles(snap))
+                        self.log("  连种 %d 格，顺手浇了 %d 格" % (
+                            self._planted_since_water, getattr(f, "last_watered", 0) or 0))
+                    except Exception as exc:
+                        self.log("  自动浇水失败：%s" % exc)
+                    self._planted_since_water = 0
             remaining = arg.get("limit", 3) - (0 if result.get("repeat") else 1)
             result["repeat"] = result["progress"] and remaining > 0
             result["remaining_arg"] = dict(arg, limit=remaining) if remaining else None

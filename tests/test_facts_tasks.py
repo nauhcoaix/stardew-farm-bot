@@ -96,10 +96,11 @@ class TaskTests(unittest.TestCase):
     def test_goal_with_planting_gets_requires(self):
         self.store.sync_facts(snap_with(seeds=0))
         self.store.sync_tasks_from_goal("把南边 6 格种上防风草", snap=SNAP)
-        task = self.store.tasks(SNAP)[0]
+        task = next(t for t in self.store.tasks(SNAP) if "种上" in t["text"])
         self.assertEqual(task["requires"].get("seeds"), ">=1")
         self.store.validate_tasks(SNAP)
-        self.assertEqual(self.store.tasks(SNAP)[0]["status"], "blocked")
+        blocked = next(t for t in self.store.tasks(SNAP) if "种上" in t["text"])
+        self.assertEqual(blocked["status"], "blocked")
 
     def test_context_lists_open_tasks(self):
         self.store.sync_facts(snap_with(seeds=0))
@@ -114,13 +115,53 @@ class RequiresCatalogTests(unittest.TestCase):
     def test_till_requires_seeds(self):
         self.assertEqual(skill_catalog.requires("till").get("seeds"), ">=1")
         self.assertEqual(skill_catalog.requires("till_plant").get("seeds"), ">=1")
-        self.assertEqual(skill_catalog.requires("water").get("crops_dry"), ">=1")
+        self.assertEqual(skill_catalog.requires("water"), {}, "water 不该被硬门槛拦住")
 
     def test_catalog_exposes_requires(self):
         snap = snap_with(seeds=0)
         item = next(x for x in skill_catalog.catalog(snap) if x["name"] == "till")
         self.assertIn("requires", item)
         self.assertEqual(item["requires"].get("seeds"), ">=1")
+
+
+class PlantedTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
+        self.tmp.close()
+        self.store = MemoryStore(self.tmp.name)
+        self.store.current = SNAP
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.tmp.name)
+
+    def test_planted_tile_survives_leaving_view(self):
+        self.store.record_planted(SNAP, (62, 18), crop="24")
+        # 离开视野：换一张空空的地图快照
+        away = dict(SNAP, location="Town", entities=[])
+        self.store.sync_facts(away)
+        self.assertEqual(self.store.facts(away)["planted_unwatered"], 0,
+                         "别的地图不该把农场的待浇地算进来")
+        self.store.sync_facts(dict(SNAP, entities=[]))
+        self.assertEqual(self.store.facts(SNAP)["planted_unwatered"], 1,
+                         "回到农场即使没看到那格，也要记得它没浇水")
+
+    def test_mark_watered_clears_fact(self):
+        self.store.record_planted(SNAP, (62, 18), crop="24")
+        self.store.sync_facts(SNAP)
+        self.assertEqual(self.store.facts(SNAP)["planted_unwatered"], 1)
+        self.store.mark_watered(SNAP, [(62, 18)])
+        self.store.sync_facts(SNAP)
+        self.assertEqual(self.store.facts(SNAP)["planted_unwatered"], 0)
+
+    def test_planting_goal_creates_watering_pair(self):
+        self.store.sync_facts(snap_with(seeds=5))
+        self.store.sync_tasks_from_goal("把农舍南边 6 格种上防风草", snap=SNAP)
+        texts = [t["text"] for t in self.store.tasks(SNAP)]
+        self.assertIn("给新种下的作物浇水", texts, "计划层要把播种和浇水配成一对")
+        water_task = next(t for t in self.store.tasks(SNAP) if "浇水" in t["text"])
+        self.assertEqual(water_task["requires"].get("planted_unwatered"), ">=1")
 
 
 if __name__ == "__main__":
