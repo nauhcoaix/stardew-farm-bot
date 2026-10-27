@@ -61,3 +61,6 @@ config.json
 !mod/agent-stardew/mods/**
 mod/agent-stardew/mods/**/*.bak-*
 mod/agent-stardew/**/*.user
+
+# 向量模型（用 scripts/fetch-embedding-model.py 下载，不入库）
+bot/models/

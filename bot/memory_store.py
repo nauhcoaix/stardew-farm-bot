@@ -68,6 +68,8 @@ class MemoryStore:
         CREATE TABLE IF NOT EXISTS cursors(save_id TEXT,session_id TEXT,seq INTEGER,last_point TEXT,
           PRIMARY KEY(save_id,session_id));
         -- 中文 bigram 倒排索引：LIKE '%词%' 只能整词命中，这里按 2-gram 建索引
+        CREATE TABLE IF NOT EXISTS vectors(event_id TEXT PRIMARY KEY, save_id TEXT, dim INTEGER, blob BLOB);
+        -- 中文 bigram 倒排索引：LIKE '%词%' 只能整词命中，这里按 2-gram 建索引
         CREATE TABLE IF NOT EXISTS grams(gram TEXT, event_id TEXT, save_id TEXT);
         CREATE INDEX IF NOT EXISTS gram_lookup ON grams(gram, save_id);
         CREATE INDEX IF NOT EXISTS gram_event ON grams(event_id);
@@ -133,6 +135,68 @@ class MemoryStore:
         with self.db:
             self.db.executemany("INSERT INTO grams VALUES(?,?,?)",
                                 [(g, event_id, scope) for g in grams])
+
+    # ---------- 向量检索（bge-small-zh ONNX，可缺省降级） ----------
+    @staticmethod
+    def _event_text_for_vec(event):
+        data = event.get("data") or {}
+        parts = [str(data.get(k) or "") for k in ("text", "goal", "reply", "skill", "detail", "reason")]
+        return " ".join(p for p in parts if p).strip()[:600]
+
+    def embed_events(self, ids=None, limit=400, batch=16):
+        """给指定/缺失向量的事件算向量；模型不可用时返回 0。"""
+        import embeddings
+        if not embeddings.available():
+            return 0
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            rows = self.db.execute(
+                "SELECT id,save_id,body FROM events WHERE id IN (%s) "
+                "AND id NOT IN (SELECT event_id FROM vectors)" % marks, list(ids)).fetchall()
+        else:
+            rows = self.db.execute(
+                "SELECT id,save_id,body FROM events WHERE id NOT IN (SELECT event_id FROM vectors) "
+                "ORDER BY ts DESC LIMIT ?", (int(limit),)).fetchall()
+        if not rows:
+            return 0
+        texts, keep = [], []
+        for r in rows:
+            try:
+                body = json.loads(r["body"])
+            except Exception:
+                continue
+            t = self._event_text_for_vec(body)
+            if not t:
+                continue
+            texts.append(t)
+            keep.append((r["id"], r["save_id"]))
+        if not texts:
+            return 0
+        vecs = embeddings.encode(texts, batch=batch)
+        if vecs is None:
+            return 0
+        with self.db:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO vectors(event_id,save_id,dim,blob) VALUES(?,?,?,?)",
+                [(eid, sc, int(vecs.shape[1]), embeddings.to_blob(vecs[i])) for i, (eid, sc) in enumerate(keep)])
+        return len(keep)
+
+    def vector_scores(self, query, ids):
+        """查询向量 vs 一批事件的余弦；模型不可用返回 None。"""
+        import embeddings
+        if not embeddings.available() or not ids:
+            return None
+        qv = embeddings.encode(query)
+        if qv is None:
+            return None
+        marks = ",".join("?" for _ in ids)
+        rows = self.db.execute("SELECT event_id,blob FROM vectors WHERE event_id IN (%s)" % marks, list(ids)).fetchall()
+        if not rows:
+            return None
+        import numpy as np
+        mat = np.vstack([embeddings.from_blob(r["blob"]) for r in rows])
+        sims = embeddings.cosine(qv[0], mat)
+        return {r["event_id"]: float(sims[i]) for i, r in enumerate(rows)}
 
     def rebuild_grams(self, snap=None):
         """重建 bigram 索引（剪枝/迁移后调用）。"""
@@ -311,6 +375,14 @@ class MemoryStore:
             return []
         ids = [r[0] for r in cand]
         hits = {r[0]: r[1] for r in cand}
+        try:
+            self.embed_events(ids=ids[:200])          # 候选里没向量的先补上
+        except Exception:
+            pass
+        try:
+            vec_scores = self.vector_scores(text, ids[:400])
+        except Exception:
+            vec_scores = None
         marks = ",".join("?" for _ in ids)
         rows = self.db.execute(
             "SELECT id,kind,location,ts,body,search FROM events WHERE id IN (%s)" % marks, ids).fetchall()
@@ -331,7 +403,11 @@ class MemoryStore:
             age_h = max(0.0, (now - (r["ts"] or now)) / 3600.0)
             recency = 1.0 / (1.0 + age_h / 6.0)          # 6 小时半衰
             weight = self.KIND_WEIGHT.get(r["kind"], 1.0)
-            score = cosine * 0.55 + recency * 0.25 + min(0.25, 0.02 * hits.get(r["id"], 0)) * weight
+            vec = vec_scores.get(r["id"], 0.0) if vec_scores else 0.0
+            if vec_scores:
+                score = vec * 0.45 + cosine * 0.30 + recency * 0.15 + min(0.10, 0.01 * hits.get(r["id"], 0)) * weight
+            else:
+                score = cosine * 0.55 + recency * 0.25 + min(0.25, 0.02 * hits.get(r["id"], 0)) * weight
             scored.append((score, r))
         scored.sort(key=lambda x: -x[0])
         out = [self._shrink(json.loads(r["body"])) for _, r in scored[:max(1, min(30, int(limit)))]]
