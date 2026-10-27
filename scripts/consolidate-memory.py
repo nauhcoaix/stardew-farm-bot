@@ -39,7 +39,7 @@ def load_events(db, hours, limit=400):
     con.row_factory = sqlite3.Row
     rows = con.execute(
         "SELECT kind, ts, location, body FROM events "
-        "WHERE kind IN ('reflection','instruction','plan','lesson') AND ts > strftime('%s','now') - ? "
+        "WHERE kind IN ('reflection','instruction','plan','lesson','resource') AND ts > strftime('%s','now') - ? "
         "ORDER BY ts DESC LIMIT ?", (int(hours * 3600), limit)).fetchall()
     con.close()
     out = []

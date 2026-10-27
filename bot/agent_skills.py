@@ -7,6 +7,7 @@ from exploration import candidates, path_to, region_route
 from farmer import tool_slot, seeds_in, water_can, CLEAR_TOOLS
 import farm_layout
 import knowledge
+from skill_catalog import requires as skill_requires
 from memory_store import dumps, position, scene, semantic, target_id
 from skill_catalog import available, catalog
 from skill_fishing import FishingSkill
@@ -299,7 +300,33 @@ class SkillRuntime:
             return self._zone_snap(snap, lambda e: bool(e.get("diggable") or e.get("tilled")))
         return snap
 
+    async def _check_requires(self, name, snap):
+        """按记忆里的状态事实检查技能前置条件；不满足就抛错并记下原因。"""
+        req = skill_requires(name)
+        if not req:
+            return
+        try:
+            self.memory.sync_facts(snap)      # 先按当前快照刷新事实，避免用过期状态判断
+            facts = self.memory.facts(snap)
+        except Exception:
+            facts = {}
+        ok, why = self.memory._check_requires(req, facts)
+        if ok:
+            return
+        # 让"为什么干不了"进入记忆与任务板，而不是只当一次失败
+        try:
+            self.memory.note("技能 %s 被前置条件挡住：%s" % (name, why), snap=snap)
+        except Exception:
+            pass
+        try:
+            self.memory.add_task("用 %s 干活" % name, requires=req, snap=snap)
+            self.memory.validate_tasks(snap)
+        except Exception:
+            pass
+        raise ValueError("前置条件不满足：%s" % why)
+
     async def _execute(self, name, arg, b, f, snap):
+        await self._check_requires(name, snap)
         snap = self._enforce_zone(name, arg or {}, snap)
         if name == "observe":
             snap = await b.snapshot(arg.get("radius", 16))

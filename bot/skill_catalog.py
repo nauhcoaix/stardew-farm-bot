@@ -41,6 +41,20 @@ def integer(value, low, high):
     return number
 
 
+# 技能前置条件：不满足就不该执行（目录里也展示给模型）
+REQUIRES = {
+    "till": {"seeds": ">=1"},          # 没种子就别锄地（锄了也种不下去）
+    "till_plant": {"seeds": ">=1"},
+    "plant": {"seeds": ">=1"},
+    "water": {"crops_dry": ">=1"},
+    "harvest": {"harvestable": ">=1"},
+}
+
+
+def requires(name):
+    return dict(REQUIRES.get(name) or {})
+
+
 def clean_steps(steps):
     if not isinstance(steps, list):
         return []
@@ -145,5 +159,6 @@ def catalog(snap):
     for name, (description, args) in DEFINITIONS.items():
         ready, reason = available(name, snap)
         result.append({"name": name, "description": description, "args": args,
+                       "requires": requires(name),
                        "available": ready, "unavailable_reason": reason if not ready else ""})
     return result

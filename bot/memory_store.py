@@ -69,6 +69,12 @@ class MemoryStore:
           PRIMARY KEY(save_id,session_id));
         -- 中文 bigram 倒排索引：LIKE '%词%' 只能整词命中，这里按 2-gram 建索引
         CREATE TABLE IF NOT EXISTS vectors(event_id TEXT PRIMARY KEY, save_id TEXT, dim INTEGER, blob BLOB);
+        -- 状态事实：同一 key 只保留最新值（和"故事"分开）
+        CREATE TABLE IF NOT EXISTS facts(save_id TEXT, key TEXT, value TEXT, updated_ts REAL, source TEXT,
+          PRIMARY KEY(save_id, key));
+        -- 任务板：带前置条件，条件不满足就 blocked（而不是反复试）
+        CREATE TABLE IF NOT EXISTS tasks(save_id TEXT, id TEXT, text TEXT, status TEXT,
+          requires TEXT, blocked_reason TEXT, updated_ts REAL, PRIMARY KEY(save_id, id));
         -- 中文 bigram 倒排索引：LIKE '%词%' 只能整词命中，这里按 2-gram 建索引
         CREATE TABLE IF NOT EXISTS grams(gram TEXT, event_id TEXT, save_id TEXT);
         CREATE INDEX IF NOT EXISTS gram_lookup ON grams(gram, save_id);
@@ -135,6 +141,164 @@ class MemoryStore:
         with self.db:
             self.db.executemany("INSERT INTO grams VALUES(?,?,?)",
                                 [(g, event_id, scope) for g in grams])
+
+    # ---------- 状态板（facts）与任务板（tasks） ----------
+    SEED_KEYWORDS = ("种子", "种子包", "Seeds", "seeds")
+
+    def sync_facts(self, snap):
+        """从快照派生当前状态，只写变化；返回 {key: (old, new)}。"""
+        if not snap:
+            return {}
+        scope = save_key(snap)
+        inv = snap.get("inventory") or []
+        ents = snap.get("entities") or []
+        seeds = 0
+        for it in inv:
+            name = it.get("name") or ""
+            if any(k in name for k in self.SEED_KEYWORDS):
+                cnt = it.get("count")
+                try:
+                    cnt = 1 if cnt is None else int(cnt)
+                except Exception:
+                    cnt = 1
+                if cnt > 0:          # count=0 表示这一格是空的，别当成 1
+                    seeds += cnt
+        tilled_empty = sum(1 for e in ents if e.get("kind") == "soil" and e.get("tilled") and not e.get("crop"))
+        tillable = sum(1 for e in ents if e.get("diggable") and not e.get("tilled") and not e.get("crop"))
+        dry = sum(1 for e in ents if e.get("kind") == "soil" and not e.get("watered")
+                  and (e.get("crop") or e.get("tilled")))
+        ready = sum(1 for e in ents if e.get("crop") and (e.get("ready") or e.get("harvestable")))
+        p = snap.get("player") or {}
+        max_items = int(p.get("maxItems") or 12)
+        used = sum(1 for i in inv if (i.get("count") or 0) > 0)
+        facts = {
+            "seeds": seeds,
+            "tilled_empty": tilled_empty,
+            "tillable": tillable,
+            "crops_dry": dry,
+            "harvestable": ready,
+            "energy": int(float(p.get("energy") or 0)),
+            "inventory_free": max(0, max_items - used),
+            "time": int(snap.get("time") or 0),
+            "location": str(snap.get("location") or ""),
+        }
+        changed = {}
+        for key, value in facts.items():
+            old = self.db.execute("SELECT value FROM facts WHERE save_id=? AND key=?", (scope, key)).fetchone()
+            old_v = None if old is None else old[0]
+            new_v = str(value)
+            if old_v == new_v:
+                continue
+            changed[key] = (old_v, new_v)
+            with self.db:
+                self.db.execute("INSERT INTO facts VALUES(?,?,?,?,?) "
+                                "ON CONFLICT(save_id,key) DO UPDATE SET value=excluded.value, "
+                                "updated_ts=excluded.updated_ts, source=excluded.source",
+                                (scope, key, new_v, self.clock(), "derived"))
+        if "seeds" in changed and changed["seeds"][1] == "0":
+            old_n = changed["seeds"][0]
+            self.append("resource", snap, source="game", confidence="observed",
+                        data={"text": "种子用完了（seeds=0，之前 %s）" % old_n, "seeds": 0})
+        return changed
+
+    def facts(self, snap=None):
+        scope = save_key(snap or self.current)
+        out = {}
+        for row in self.db.execute("SELECT key,value FROM facts WHERE save_id=?", (scope,)):
+            try:
+                out[row["key"]] = json.loads(row["value"])
+            except Exception:
+                out[row["key"]] = row["value"]
+        return out
+
+    def add_task(self, text, requires=None, snap=None):
+        import uuid as _uuid
+        scope = save_key(snap or self.current)
+        dup = self.db.execute("SELECT id FROM tasks WHERE save_id=? AND text=? AND status!='done'",
+                              (scope, str(text)[:300])).fetchone()
+        if dup:
+            return dup[0]                     # 同一任务不重复登记
+        tid = _uuid.uuid4().hex[:12]
+        with self.db:
+            self.db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?)",
+                            (scope, tid, str(text)[:300], "pending",
+                             json.dumps(requires or {}, ensure_ascii=False), "", self.clock()))
+        return tid
+
+    def tasks(self, snap=None, status=None):
+        scope = save_key(snap or self.current)
+        sql = "SELECT id,text,status,requires,blocked_reason FROM tasks WHERE save_id=?"
+        args = [scope]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        out = []
+        for r in self.db.execute(sql + " ORDER BY updated_ts DESC", args):
+            try:
+                req = json.loads(r["requires"] or "{}")
+            except Exception:
+                req = {}
+            out.append({"id": r["id"], "text": r["text"], "status": r["status"],
+                        "requires": req, "reason": r["blocked_reason"]})
+        return out
+
+    def validate_tasks(self, snap=None):
+        """按当前事实校验任务前置条件；不满足就 blocked，恢复则解锁。"""
+        scope = save_key(snap or self.current)
+        facts = self.facts(snap)
+        changed = []
+        for task in self.tasks(snap):
+            if task["status"] == "done":
+                continue
+            ok, why = self._check_requires(task["requires"], facts)
+            want = "pending" if ok else "blocked"
+            if task["status"] != want or (not ok and task["reason"] != why):
+                with self.db:
+                    self.db.execute("UPDATE tasks SET status=?, blocked_reason=?, updated_ts=? "
+                                    "WHERE save_id=? AND id=?", (want, why, self.clock(), scope, task["id"]))
+                changed.append((task["text"], want, why))
+        return changed
+
+    @staticmethod
+    def _check_requires(requires, facts):
+        """requires 形如 {"seeds": ">=1"}；返回 (是否满足, 原因)。"""
+        for key, expr in (requires or {}).items():
+            have = facts.get(key)
+            if have is None:
+                return False, "状态未知：%s" % key
+            try:
+                if isinstance(expr, str) and expr[:2] in (">=", "<=", "==", "!=", ">", "<"):
+                    op, num = expr[:2] if expr[1] == "=" else expr[:1], float(expr.lstrip("><=! "))
+                    cur = float(have)
+                    want = {">=": cur >= num, "<=": cur <= num, "==": cur == num,
+                            "!=": cur != num, ">": cur > num, "<": cur < num}[op]
+                else:
+                    want = float(have) >= float(expr)
+            except Exception:
+                return False, "条件无法判断：%s %s" % (key, expr)
+            if not want:
+                label = {"seeds": "种子", "crops_dry": "待浇地", "harvestable": "成熟作物"}.get(key, key)
+                return False, "%s不足（%s=%s，要求%s）" % (label, key, have, expr)
+        return True, ""
+
+    def sync_tasks_from_goal(self, goal, snap=None):
+        """计划目标若要求"种/播"，自动挂上 seeds>=1 的前置条件。"""
+        goal = str(goal or "")
+        if not goal:
+            return None
+        planting = any(k in goal for k in ("种", "播", "sowing", "plant"))
+        watering = "浇" in goal
+        if not (planting or watering):
+            return None
+        requires = {}
+        if planting:
+            requires["seeds"] = ">=1"
+        if watering:
+            requires["crops_dry"] = ">=1"
+        existing = {t["text"] for t in self.tasks(snap)}
+        if goal in existing:
+            return None
+        return self.add_task(goal, requires=requires, snap=snap)
 
     # ---------- 向量检索（bge-small-zh ONNX，可缺省降级） ----------
     @staticmethod
@@ -486,7 +650,16 @@ class MemoryStore:
             if isinstance(data.get("result"), dict):
                 row["data"]["result"] = {k: data["result"].get(k) for k in ("status", "progress", "detail")}
             compact.append(row)
+        try:
+            facts = self.facts(snap)
+        except Exception:
+            facts = {}
+        try:
+            open_tasks = [t for t in self.tasks(snap) if t["status"] != "done"]
+        except Exception:
+            open_tasks = []
         return {"save_id": scope, "persistent_identity": snap.get("saveId") is not None,
+                "state_facts": facts, "open_tasks": open_tasks,
                 "event_types": ["observation", "position", "movement", "trace_gap", "transition", "intent", "plan", "skill_call", "skill_target", "skill", "reflection", "instruction"],
                 "observed_tiles": total, "visited_tiles": visited, "recent": compact,
                 "connections": self.links(snap)[:40]}

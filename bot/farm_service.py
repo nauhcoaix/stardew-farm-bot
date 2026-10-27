@@ -495,6 +495,14 @@ async def _run_once(brain):
                     os.remove(path)
                 except OSError:
                     pass
+        try:
+            changed = brain.memory.sync_facts(snap)
+            if changed:
+                log("状态更新：%s" % ", ".join("%s=%s" % (k, v[1]) for k, v in changed.items()))
+            for text, status, why in brain.memory.validate_tasks(snap):
+                log("任务「%s」-> %s%s" % (text[:40], status, ("（%s）" % why) if why else ""))
+        except Exception as exc:
+            log("状态同步失败：%s" % exc)
         brain.poll(snap, planning_text(snap, runtime=runtime, objective=brain.intent))
         PLAN_REASON = brain.goal
         if stop_requested():

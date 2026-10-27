@@ -104,6 +104,10 @@ class WorkPlanner:
                 steps = clean_steps(result.get("steps"))
                 self._queue.extend(steps)
                 self.goal = str(result.get("goal") or "")[:400]
+                try:
+                    self.memory.sync_tasks_from_goal(self.goal, snap=snap)
+                except Exception:
+                    pass
                 self._failures = 0
                 self._retry_at = self.clock() + (self.refill_interval if steps else 3)
                 self.memory.append("plan", snap, source="model", confidence="hypothesis", status="proposed",
