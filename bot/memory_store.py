@@ -84,6 +84,13 @@ class MemoryStore:
         CREATE INDEX IF NOT EXISTS gram_event ON grams(event_id);
         PRAGMA user_version=2;
         """)
+        for col, ddl in (("planted_day", "INTEGER"), ("watered_day", "INTEGER"),
+                         ("phase_last_seen", "INTEGER"), ("phase_seen_day", "INTEGER"),
+                         ("crop_name", "TEXT")):
+            try:
+                self.db.execute("ALTER TABLE planted ADD COLUMN %s %s" % (col, ddl))
+            except sqlite3.OperationalError:
+                pass          # 已经有了
         self.current = {}
         self.previous = None
         self._tiles = {}
@@ -146,15 +153,106 @@ class MemoryStore:
                                 [(g, event_id, scope) for g in grams])
 
     # ---------- 已种作物（持久化，供浇水用） ----------
+    SEASON_INDEX = {"spring": 0, "summer": 1, "fall": 2, "winter": 3}
+
+    @classmethod
+    def game_day(cls, snap):
+        """把 (year, season, day) 折算成绝对天数，方便做差。"""
+        d = (snap or {}).get("date") or {}
+        try:
+            year = int(d.get("year") or 1)
+            season = cls.SEASON_INDEX.get(str(d.get("season") or "").lower(), 0)
+            day = int(d.get("day") or 1)
+        except Exception:
+            return None
+        return (year - 1) * 4 * 28 + season * 28 + (day - 1)
+
+    @classmethod
+    def day_text(cls, day):
+        if day is None:
+            return "未知"
+        year, rest = divmod(int(day), 4 * 28)
+        season, dd = divmod(rest, 28)
+        names = ["spring", "summer", "fall", "winter"]
+        return "春%d" % (dd + 1) if season == 0 else "%s%d" % (names[season], dd + 1)
+
+    def update_phases(self, snap):
+        """视野内看到作物就更新阶段；顺便登记没记录过的作物。"""
+        if not snap:
+            return 0
+        scope, loc = save_key(snap), snap.get("location")
+        today = self.game_day(snap)
+        n = 0
+        with self.db:
+            for e in snap.get("entities") or []:
+                if not e.get("crop"):
+                    continue
+                t = e.get("tile") or {}
+                x, y = t.get("x"), t.get("y")
+                if x is None:
+                    continue
+                phase = int(e.get("cropPhase") or 0)
+                name = str(e.get("name") or "")
+                row = self.db.execute(
+                    "SELECT planted_day FROM planted WHERE save_id=? AND location=? AND x=? AND y=?",
+                    (scope, loc, x, y)).fetchone()
+                if row is None:
+                    # 视野里发现没登记过的作物（比如剧本里早种的），补登记
+                    self.db.execute(
+                        "INSERT INTO planted VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (scope, loc, x, y, str(e.get("crop") or ""), self.clock(), None,
+                         today, None, phase, today, name))
+                else:
+                    self.db.execute(
+                        "UPDATE planted SET phase_last_seen=?, phase_seen_day=?%s "
+                        "WHERE save_id=? AND location=? AND x=? AND y=?"
+                        % (", crop_name=?" if name else ""),
+                        ([phase, today] + ([name] if name else []) + [scope, loc, x, y]))
+                n += 1
+        return n
+
+    def crop_progress(self, snap=None):
+        """算每块已种地的进度：种了几天、几天没浇、预计还差几天。"""
+        snap = snap or self.current
+        scope = save_key(snap)
+        today = self.game_day(snap)
+        rows = self.db.execute(
+            "SELECT x,y,crop,crop_name,planted_day,watered_day,phase_last_seen FROM planted "
+            "WHERE save_id=? AND phase_last_seen IS NOT NULL AND phase_last_seen < 4", (scope,)).fetchall()
+        out = []
+        for r in rows:
+            planted_day = r["planted_day"] if r["planted_day"] is not None else today
+            days_total = 4                      # 默认按防风草算，可被知识库覆盖
+            name = r["crop_name"] or ""
+            if "土豆" in name:
+                days_total = 6
+            elif "花椰菜" in name:
+                days_total = 12
+            grown = 0
+            if today is not None and planted_day is not None:
+                grown = max(0, today - planted_day)
+            watered_today = (r["watered_day"] == today) if today is not None else False
+            out.append({"x": r["x"], "y": r["y"], "crop": r["crop"], "name": name,
+                        "planted_day": planted_day, "grown": grown, "days_total": days_total,
+                        "left": max(0, days_total - grown), "phase": r["phase_last_seen"],
+                        "watered_today": watered_today,
+                        "overdue": grown >= days_total, "thirsty": not watered_today})
+        return out
+
     def record_planted(self, snap, tile, crop=None):
         scope = save_key(snap)
         loc = snap.get("location")
         x, y = int(tile[0]), int(tile[1])
+        today = self.game_day(snap)
         with self.db:
-            self.db.execute("INSERT INTO planted VALUES(?,?,?,?,?,?,?) "
+            self.db.execute("INSERT INTO planted(save_id,location,x,y,crop,planted_ts,watered_ts,"
+                            "planted_day,watered_day,phase_last_seen,phase_seen_day) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
                             "ON CONFLICT(save_id,location,x,y) DO UPDATE SET planted_ts=excluded.planted_ts, "
-                            "crop=excluded.crop, watered_ts=NULL",
-                            (scope, loc, x, y, str(crop or ""), self.clock(), None))
+                            "planted_day=excluded.planted_day, crop=excluded.crop, "
+                            "watered_ts=NULL, watered_day=NULL, phase_last_seen=0",
+                            (scope, loc, x, y, str(crop or ""), self.clock(), None,
+                             today, None, 0, today))
         return (loc, x, y)
 
     def mark_watered(self, snap, tiles):
@@ -162,20 +260,24 @@ class MemoryStore:
         loc = snap.get("location")
         n = 0
         with self.db:
+            today = self.game_day(snap)
             for t in tiles:
-                cur = self.db.execute("UPDATE planted SET watered_ts=? "
+                cur = self.db.execute("UPDATE planted SET watered_ts=?, watered_day=? "
                                       "WHERE save_id=? AND location=? AND x=? AND y=?",
-                                      (self.clock(), scope, loc, int(t[0]), int(t[1])))
+                                      (self.clock(), today, scope, loc, int(t[0]), int(t[1])))
                 n += cur.rowcount
         return n
 
     def unwatered_planted(self, snap=None, location=None):
+        """今天还没浇的已种作物（按游戏日判断；老数据没有日期时按"从未浇过"算）。"""
         snap = snap or self.current
         scope = save_key(snap)
         loc = location or snap.get("location")
+        today = self.game_day(snap)
         rows = self.db.execute(
-            "SELECT x,y,crop FROM planted WHERE save_id=? AND location=? AND watered_ts IS NULL",
-            (scope, loc)).fetchall()
+            "SELECT x,y,crop FROM planted WHERE save_id=? AND location=? "
+            "AND (watered_day IS NULL OR ? IS NULL OR watered_day != ?)",
+            (scope, loc, today, today)).fetchall()
         return [(r["x"], r["y"], r["crop"]) for r in rows]
 
     # ---------- 状态板（facts）与任务板（tasks） ----------
@@ -208,11 +310,28 @@ class MemoryStore:
         max_items = int(p.get("maxItems") or 12)
         used = sum(1 for i in inv if (i.get("count") or 0) > 0)
         try:
+            self.update_phases(snap)          # 视野里看到作物就刷新阶段
+        except Exception:
+            pass
+        try:
             unwatered = len(self.unwatered_planted(snap))
         except Exception:
             unwatered = 0
+        try:
+            progress = self.crop_progress(snap)
+        except Exception:
+            progress = []
+        growing = [c for c in progress if c["phase"] < 4]
+        overdue = [c for c in growing if c["overdue"]]
+        thirsty = [c for c in growing if c["thirsty"]]
+        tomorrow = [c for c in growing if c["left"] <= 1 and not c["overdue"]]
         facts = {
             "planted_unwatered": unwatered,
+            "crops_growing": len(growing),
+            "crops_ready_tomorrow": len(tomorrow),
+            "crops_overdue": len(overdue),
+            "crops_thirsty": len(thirsty),
+            "crops_seen": len(progress),
             "seeds": seeds,
             "tilled_empty": tilled_empty,
             "tillable": tillable,
@@ -349,8 +468,13 @@ class MemoryStore:
         planting = (not acquiring) and ("播" in goal or "sowing" in goal or "plant" in goal
                                         or bool(_re.search(r"种(?!子)", goal)))
         watering = (not acquiring) and ("浇" in goal)
-        if not (planting or watering):
+        harvesting = (not acquiring) and any(k in goal for k in ("收", "采集", "harvest"))
+        if harvesting and "harvestable" not in (requires or {}):
+            requires["harvestable"] = ">=1" if not requires else requires.get("harvestable", ">=1")
+        if not (planting or watering or harvesting):
             return None
+        if harvesting:
+            requires.setdefault("harvestable", ">=1")
         requires = {}
         if planting:
             requires["seeds"] = ">=1"

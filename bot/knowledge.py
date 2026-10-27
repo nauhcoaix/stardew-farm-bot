@@ -62,9 +62,10 @@ def digest(max_lines=28):
             "%s；%s" % (shop.get("location"), shop.get("note") or "坐标未知")))
 
     for crop in data.get("crops") or []:
-        out.append("%s：%s %s 天成熟，种子 %s g，卖 %s g" % (
+        out.append("%s：%s %s 天成熟，种子 %s g，卖 %s g（%s）" % (
             crop.get("name"), crop.get("season"), crop.get("days"),
-            crop.get("seed_price"), crop.get("sell")))
+            crop.get("seed_price"), crop.get("sell"),
+            crop.get("water_growth") or "每天浇水才长"))
 
     gift = data.get("starting_gift") or {}
     if gift:
