@@ -82,6 +82,10 @@ class SkillRuntime:
         except Exception:
             base["water_targets"], base["seeds"] = [], 0
         try:
+            base["today_brief"] = self.memory.day_brief(snap)
+        except Exception:
+            base["today_brief"] = ""
+        try:
             base["schedule"] = self.memory.schedule(snap)
             base["current_stage"] = self.memory.current_stage(snap)
         except Exception:

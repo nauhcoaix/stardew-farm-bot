@@ -254,6 +254,11 @@ class MemoryStore:
     # ---------- 已种作物（持久化，供浇水用） ----------
     SEASON_INDEX = {"spring": 0, "summer": 1, "fall": 2, "winter": 3}
 
+    @staticmethod
+    def today_key(snap):
+        d = (snap or {}).get("date") or {}
+        return (d.get("year"), str(d.get("season") or ""), d.get("day"))
+
     @classmethod
     def game_day(cls, snap):
         """把 (year, season, day) 折算成绝对天数，方便做差。"""
@@ -438,6 +443,22 @@ class MemoryStore:
                     "SELECT slot,slot_name,text,status,requires FROM schedule "
                     "WHERE save_id=? AND day=? ORDER BY slot", (scope, today))]
 
+    def day_brief(self, snap=None):
+        """给模型看的"今天是第几天"摘要。"""
+        snap = snap or self.current
+        d = snap.get("date") or {}
+        today = self.today_key(snap)
+        brief = "现在是第%s年 %s 第%s天，时间 %s" % (d.get("year"), d.get("season"), d.get("day"),
+                                                     snap.get("time"))
+        try:
+            prev = self.db.execute(
+                "SELECT value FROM facts WHERE save_id=? AND key='game_day'", (save_key(snap),)).fetchone()
+            if prev and prev[0] != "%s-%s-%s" % today:
+                brief += "（新的一天：昨天的计划与任务已作废，按今天的现场重新安排）"
+        except Exception:
+            pass
+        return brief
+
     def current_stage(self, snap=None):
         for st in self.schedule(snap):
             if st["status"] in ("pending", "blocked"):
@@ -548,7 +569,16 @@ class MemoryStore:
         overdue = [c for c in growing if c["overdue"]]
         thirsty = [c for c in growing if c["thirsty"]]
         tomorrow = [c for c in growing if c["left"] <= 1 and not c["overdue"]]
+        try:
+            planted_total = self.db.execute("SELECT COUNT(*) FROM planted WHERE save_id=?",
+                                            (scope,)).fetchone()[0]
+        except Exception:
+            planted_total = 0
+        d = snap.get("date") or {}
+        is_fresh = (int(d.get("day") or 0) == 1) and planted_total == 0 and seeds == 0
         facts = {
+            "is_fresh_save": 1 if is_fresh else 0,
+            "planted_total": planted_total,
             "planted_unwatered": unwatered,
             "crops_growing": len(growing),
             "crops_ready_tomorrow": len(tomorrow),
@@ -568,6 +598,25 @@ class MemoryStore:
             "time": int(snap.get("time") or 0),
             "location": str(snap.get("location") or ""),
         }
+        today = self.today_key(snap)
+        now_day = "%s-%s-%s" % today
+        try:
+            row = self.db.execute("SELECT value FROM facts WHERE save_id=? AND key='game_day'",
+                                  (scope,)).fetchone()
+            old_day = row[0] if row else None
+        except Exception:
+            old_day = None
+        if old_day != now_day:
+            try:
+                with self.db:
+                    killed = self.db.execute("DELETE FROM tasks WHERE save_id=? AND status!='done'",
+                                             (scope,)).rowcount
+                self.append("session", snap, source="game", confidence="observed",
+                            data={"text": "进入新的一天 %s（清掉 %d 个旧任务）" % (now_day, killed),
+                                  "day": list(today)})
+            except Exception:
+                pass
+        facts["game_day"] = now_day
         changed = {}
         for key, value in facts.items():
             old = self.db.execute("SELECT value FROM facts WHERE save_id=? AND key=?", (scope, key)).fetchone()
@@ -906,7 +955,7 @@ class MemoryStore:
         scope = save_key(snap or self.current)
         text = str(text or "")[:300]
         if text:
-            scored = self._ranked(text, scope, kind=kind, location=location, limit=limit)
+            scored = self._ranked(text, scope, kind=kind, location=location, limit=limit, snap=snap)
             if scored is not None:
                 return scored
         clauses, values = ["save_id=?"], [scope]
@@ -938,7 +987,7 @@ class MemoryStore:
                    "plan": 0.7, "intent": 0.8, "observation": 0.9, "skill": 1.0,
                    "skill_call": 0.8, "skill_target": 0.6, "movement": 0.3, "transition": 1.5}
 
-    def _ranked(self, text, scope, kind=None, location=None, limit=12):
+    def _ranked(self, text, scope, kind=None, location=None, limit=12, snap=None):
         """bigram 候选 + TF-IDF 余弦 + 时间衰减 + 类型权重。返回 None 表示回退 LIKE。"""
         grams = self._grams(text)
         if not grams:
@@ -970,11 +1019,20 @@ class MemoryStore:
         q = self._grams(text)
         now = self.clock()
         scored = []
+        today = self.today_key(snap or self.current)
         for r in rows:
             if kind and r["kind"] != kind:
                 continue
             if location and r["location"] != location:
                 continue
+            if r["kind"] in ("plan", "intent"):
+                try:
+                    gt = (json.loads(r["body"]).get("game_time") or {})
+                    key = (gt.get("year"), str(gt.get("season") or ""), gt.get("day"))
+                    if today[0] is not None and key[0] is not None and key != today:
+                        continue          # 昨天的计划不该被想起来
+                except Exception:
+                    pass
             doc = self._grams(" ".join([str(r["search"] or ""), self._event_text(json.loads(r["body"]))]))
             if not doc:
                 continue

@@ -69,9 +69,10 @@ def digest(max_lines=28):
 
     gift = data.get("starting_gift") or {}
     if gift:
-        out.append("开局礼物：%s 里有 %s 个 %s（%s）" % (
+        out.append("开局礼物：%s 里有 %s 个 %s（%s；%s）" % (
             gift.get("location"), gift.get("count"), gift.get("item"),
-            "只此一次" if gift.get("once") else "可重复"))
+            "只此一次" if gift.get("once") else "可重复",
+            gift.get("condition") or "仅新存档有效"))
 
     craft = data.get("crafting") or {}
     if craft.get("examples"):
