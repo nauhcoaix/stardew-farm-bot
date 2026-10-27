@@ -66,6 +66,12 @@ def digest(max_lines=28):
             crop.get("name"), crop.get("season"), crop.get("days"),
             crop.get("seed_price"), crop.get("sell")))
 
+    gift = data.get("starting_gift") or {}
+    if gift:
+        out.append("开局礼物：%s 里有 %s 个 %s（%s）" % (
+            gift.get("location"), gift.get("count"), gift.get("item"),
+            "只此一次" if gift.get("once") else "可重复"))
+
     for rule in data.get("rules") or []:
         out.append("规则：%s" % rule)
 
