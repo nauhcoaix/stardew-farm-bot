@@ -826,14 +826,18 @@ class Farmer:
         pos = (snap.get("player") or {}).get("position") or {}
         px, py = pos.get("x", 0), pos.get("y", 0)
         cands = []
+        import farm_layout as _fl
+        house = _fl.house_tile(snap)
         for e in ents(snap):
             # 已翻过的地（比如刚收完作物）不要重复挖：它本来就能直接种
-            if not e.get("diggable") or e.get("tilled") or e.get("crop") or not in_plot(e.get("tile")):
+            if not e.get("diggable") or e.get("tilled") or e.get("crop"):
                 continue
             if not self.history.allowed(snap, "till", e):
                 continue
             t = e.get("tile") or {}
-            cands.append((abs(t.get("x", 0) - px) + abs(t.get("y", 0) - py), e))
+            tile = (t.get("x", 0), t.get("y", 0))
+            # 田块内优先；田块不够时按离农舍远近往外扩
+            cands.append(((0 if in_plot(e.get("tile")) else 1, _fl.dist(tile, house)), e))
         cands.sort(key=lambda x: x[0])
         tiles = [e for d, e in cands[:limit]]
         if not tiles:

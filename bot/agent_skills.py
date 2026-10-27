@@ -5,6 +5,7 @@ import uuid
 
 from exploration import candidates, path_to, region_route
 from farmer import tool_slot, seeds_in, water_can, CLEAR_TOOLS
+import farm_layout
 from memory_store import dumps, position, scene, semantic, target_id
 from skill_catalog import available, catalog
 from skill_fishing import FishingSkill
@@ -306,13 +307,27 @@ class SkillRuntime:
             if arg.get("target"):
                 entity = self._target(snap, arg["target"])
             else:
-                targets = [e for e in snap.get("entities") or [] if e.get("name") in CLEAR_TOOLS
-                           and tool_slot(snap, CLEAR_TOOLS[e["name"]])]
-                p = position(snap)
-                targets.sort(key=lambda e: abs(e["tile"]["x"] - p["x"]) + abs(e["tile"]["y"] - p["y"]))
-                if not targets:
-                    raise ValueError("观察中没有可用工具处理的障碍")
-                entity = targets[0]
+                # 优先清农舍周边：按到农舍的距离排序，只取最近那一圈的
+                need = max(1, int(arg.get("need") or arg.get("limit", 3)))
+                zone = str(arg.get("zone") or "cluster")
+                cands = farm_layout.clear_candidates(snap, zone=zone, need=need, max_n=1)
+                entity = None
+                if cands:
+                    want = (cands[0]["tile"]["x"], cands[0]["tile"]["y"])
+                    entity = next((e for e in snap.get("entities") or []
+                                   if e.get("name") in CLEAR_TOOLS
+                                   and (e.get("tile") or {}).get("x") == want[0]
+                                   and (e.get("tile") or {}).get("y") == want[1]), None)
+                if entity is None:
+                    # 兜底：仍然只考虑"离农舍最近"的障碍，而不是离自己最近的
+                    targets = [e for e in snap.get("entities") or [] if e.get("name") in CLEAR_TOOLS
+                               and tool_slot(snap, CLEAR_TOOLS[e["name"]])]
+                    if not targets:
+                        raise ValueError("观察中没有可用工具处理的障碍")
+                    house = farm_layout.house_tile(snap)
+                    targets.sort(key=lambda e: farm_layout.dist(
+                        ((e.get("tile") or {}).get("x"), (e.get("tile") or {}).get("y")), house))
+                    entity = targets[0]
             tool = tool_slot(snap, CLEAR_TOOLS.get(entity.get("name")))
             if not tool:
                 raise ValueError("当前工具无法处理该障碍")
@@ -327,6 +342,11 @@ class SkillRuntime:
             targets = [e for e in snap.get("entities") or [] if not e.get("crop") and (e.get("tilled") or e.get("diggable"))]
             if not targets:
                 raise ValueError("当前没有已观察到的可种地")
+            # 农舍周边优先；同一圈里先种已经翻好的（不用再挖）
+            house = farm_layout.house_tile(snap)
+            targets.sort(key=lambda e: (farm_layout.dist(
+                ((e.get("tile") or {}).get("x"), (e.get("tile") or {}).get("y")), house),
+                0 if e.get("tilled") else 1))
             e = targets[0]
             if not e.get("tilled"):
                 snap, result = await self._execute("till", {"target": target_id(snap.get("location"), e)}, b, f, snap)
