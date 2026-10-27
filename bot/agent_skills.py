@@ -281,6 +281,7 @@ class SkillRuntime:
 
     FARM_WORK = {"clear", "use", "till", "plant", "harvest", "chop", "water", "till_plant"}
     ZONE_RADIUS = 12
+    ZONE_STEP = 6        # 目标超半径不超过这个数就自动扩圈
 
     def _house_zone(self, snap):
         """农场 + 看得见农舍时，返回 (农舍格, 半径)；否则 None。"""
@@ -330,10 +331,19 @@ class SkillRuntime:
             entity = self._target(snap, arg["target"])
             if not self._in_zone(snap, entity):
                 t = entity.get("tile") or {}
+                d = farm_layout.dist((t.get("x"), t.get("y")), house)
+                # A：只是稍微超一点 -> 自动放宽作业半径，别让它卡在边界上
+                if d <= radius + self.ZONE_STEP:
+                    self._zone_radius = d
+                    self.log("  目标离农舍 %d 格，超出 %d，作业半径放宽到 %d" % (d, radius, d))
+                    try:
+                        self.memory.add_task("作业半径放宽到 %d 格" % d, snap=snap)
+                    except Exception:
+                        pass
+                    return snap
                 raise ValueError(
-                    "目标 (%s,%s) 离农舍 %d 格，超出当前作业半径 %d；先在农舍附近干活，"
-                    "要扩圈用 explore 换个探索候选" % (t.get("x"), t.get("y"),
-                                                        farm_layout.dist((t.get("x"), t.get("y")), house), radius))
+                    "目标 (%s,%s) 离农舍 %d 格，超出当前作业半径 %d 太多；先在农舍附近干活，"
+                    "要扩圈用 explore 换个探索候选" % (t.get("x"), t.get("y"), d, radius))
             return snap
         if name == "harvest":
             return self._zone_snap(snap, lambda e: bool(e.get("crop")))
