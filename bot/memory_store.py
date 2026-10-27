@@ -281,13 +281,33 @@ class MemoryStore:
                 return False, "%s不足（%s=%s，要求%s）" % (label, key, have, expr)
         return True, ""
 
+    # 这些词说明目标是"去弄到种子"，不该被 seeds 条件拦住（否则死锁）
+    ACQUIRE_WORDS = ("买", "购买", "获取", "得到", "找", "拿", "取回", "商店", "皮埃尔", "箱子")
+
+    def prune_tasks(self, keep=20, snap=None):
+        """任务板不能无限长：只保留最近 keep 条未完成的。"""
+        scope = save_key(snap or self.current)
+        rows = self.db.execute(
+            "SELECT id FROM tasks WHERE save_id=? AND status!='done' ORDER BY updated_ts DESC", (scope,)).fetchall()
+        stale = [r[0] for r in rows[keep:]]
+        if stale:
+            marks = ",".join("?" for _ in stale)
+            with self.db:
+                self.db.execute("DELETE FROM tasks WHERE save_id=? AND id IN (%s)" % marks,
+                                [scope] + stale)
+        return len(stale)
+
     def sync_tasks_from_goal(self, goal, snap=None):
-        """计划目标若要求"种/播"，自动挂上 seeds>=1 的前置条件。"""
+        """按目标语义挂前置条件：播种要 seeds>=1，浇水要 crops_dry>=1，买种子不要条件。"""
         goal = str(goal or "")
         if not goal:
             return None
-        planting = any(k in goal for k in ("种", "播", "sowing", "plant"))
-        watering = "浇" in goal
+        acquiring = any(k in goal for k in self.ACQUIRE_WORDS)
+        import re as _re
+        # "种"但不是"种子"才算播种（"买种子/找种子"已经被 acquiring 排除）
+        planting = (not acquiring) and ("播" in goal or "sowing" in goal or "plant" in goal
+                                        or bool(_re.search(r"种(?!子)", goal)))
+        watering = (not acquiring) and ("浇" in goal)
         if not (planting or watering):
             return None
         requires = {}
