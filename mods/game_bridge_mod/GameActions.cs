@@ -58,51 +58,64 @@ public static class GameActions
         private readonly GameLocation location = Game1.currentLocation;
         private readonly string? reference;
         private readonly bool exitGoal;
+        private const int MaxReplans = 3;
+        private const double StallSeconds = 1.2;
+        private const double WaitForCharacterSeconds = 1.5;
+        private const float WaypointTolerance = 12f;
+        private bool nearGoal;
         private Point goal;
         private Queue<Point> path;
         private Vector2 lastPosition = Game1.player.Position;
         private DateTime lastMoved = DateTime.UtcNow;
+        private DateTime blockedSince = DateTime.MinValue;
+        private int replans;
         private bool moved;
+
         public MoveAction(Observations observations, IReflectionHelper reflection, Point tile, Observations.Target? target, string? reference)
         {
             this.observations = observations; this.reference = reference;
             exitGoal = target?.Identity is Warp || location.warps.Any(w => w.X == tile.X && w.Y == tile.Y);
-            goal = tile; path = FindPath(tile, target != null && !exitGoal);
+            nearGoal = target != null && !exitGoal;
+            goal = tile;
+            path = BuildPath();
             simulator = reflection.GetField<IInputSimulator?>(typeof(Game1), "inputSimulator");
             if (simulator.GetValue() != null) throw new ActionFault("BUSY", "其他控制器正在使用游戏模拟输入。");
             simulator.SetValue(input);
         }
-        private static readonly Point[] Directions = { new(0, -1), new(1, 0), new(0, 1), new(-1, 0) };
-        private Queue<Point> FindPath(Point target, bool near)
+
+        //: 用 A* 找路（4 邻接、曼哈顿启发）；找不到就明确报“不可达”，不原地打转。
+        private Queue<Point> BuildPath()
         {
-            if (!Observations.InBounds(location, target) && !exitGoal) throw new ActionFault("INVALID_ARGUMENT", "坐标超出地图范围。");
-            var start = Observations.Position;
-            bool Arrived(Point p) => near ? Math.Abs(p.X - target.X) + Math.Abs(p.Y - target.Y) <= 1 : p == target;
-            var queue = new Queue<Point>(); queue.Enqueue(start);
-            var previous = new Dictionary<Point, Point?> { [start] = null };
-            while (queue.TryDequeue(out var current))
-            {
-                if (Arrived(current))
-                {
-                    var nodes = new List<Point>();
-                    for (var p = current; previous[p] is Point parent; p = parent) nodes.Add(p);
-                    nodes.Reverse(); return new Queue<Point>(nodes);
-                }
-                foreach (var step in Directions)
-                {
-                    var next = current + step;
-                    if (previous.ContainsKey(next)) continue;
-                    var isExit = exitGoal && next == target;
-                    if (!isExit && !Observations.Walkable(location, next)) continue;
-                    // 中途不经过自动切图点，交给明确的目标动作处理。
-                    var touch = Observations.InBounds(location, next) ? location.doesTileHaveProperty(next.X, next.Y, "TouchAction", "Back") : null;
-                    if (!Arrived(next) && (location.warps.Any(w => w.X == next.X && w.Y == next.Y) || touch?.StartsWith("Warp", StringComparison.Ordinal) == true)) continue;
-                    previous[next] = current; queue.Enqueue(next);
-                    if (previous.Count > 16384) throw new ActionFault("PATH_BLOCKED", "路径搜索超过范围，请选择较近目标。");
-                }
-            }
-            throw new ActionFault("PATH_BLOCKED", "没有可走到目标的路径。");
+            if (!Observations.InBounds(location, goal) && !exitGoal)
+                throw new ActionFault("INVALID_ARGUMENT", "坐标超出地图范围。");
+            var nodes = Pathfinder.Find(location, Observations.Position, goal, nearGoal, exitGoal);
+            if (nodes == null)
+                throw new ActionFault(
+                    "PATH_BLOCKED",
+                    "A* 找不到可行路径：目标可能被家具/角色挡住，或需要先经过门/楼梯。换目标，或先 move_to 到中间点。"
+                );
+            return new Queue<Point>(nodes);
         }
+
+        private bool TryReplan()
+        {
+            if (replans >= MaxReplans) return false;
+            var nodes = Pathfinder.Find(location, Observations.Position, goal, nearGoal, exitGoal);
+            if (nodes == null) return false;
+            path = new Queue<Point>(nodes);
+            replans++;
+            lastMoved = DateTime.UtcNow;
+            blockedSince = DateTime.MinValue;
+            return true;
+        }
+
+        private bool BlockedByCharacter(Point tile)
+        {
+            foreach (var npc in location.characters)
+                if (npc.TilePoint == tile) return true;
+            return false;
+        }
+
         public object? Tick()
         {
             input.Direction = -1;
@@ -111,23 +124,60 @@ public static class GameActions
             if (reference != null)
             {
                 var current = observations.Resolve(reference).Tile;
-                if (current != goal) { goal = current; path = FindPath(goal, true); }
+                if (current != goal)
+                {
+                    goal = current;
+                    nearGoal = true;
+                    if (!TryReplan()) throw new ActionFault("PATH_BLOCKED", "目标移动后 A* 找不到新路径。");
+                }
             }
             if (Game1.activeClickableMenu != null) return observations.Result("移动触发菜单，请根据新快照选择。", moved);
             if (Game1.fadeToBlack || !Game1.player.CanMove) return null;
-            if (Game1.player.Position != lastPosition) { moved = true; lastPosition = Game1.player.Position; lastMoved = DateTime.UtcNow; }
-            else if ((DateTime.UtcNow - lastMoved).TotalSeconds > 2) throw new ActionFault("PATH_BLOCKED", "角色连续两秒未前进，已停止。");
+
+            var now = DateTime.UtcNow;
+            if (Game1.player.Position != lastPosition)
+            {
+                moved = true;
+                lastPosition = Game1.player.Position;
+                lastMoved = now;
+                blockedSince = DateTime.MinValue;
+            }
+            else if ((now - lastMoved).TotalSeconds > StallSeconds)
+            {
+                if (!TryReplan())
+                    throw new ActionFault(
+                        "PATH_BLOCKED",
+                        $"连续 {StallSeconds:0.0} 秒没有前进，A* 重算 {replans} 次仍未脱困。"
+                    );
+            }
+
             var center = Game1.player.GetBoundingBox().Center.ToVector2();
-            while (path.Count > 0 && Vector2.Distance(center, path.Peek().ToVector2() * 64 + new Vector2(32)) <= 5) path.Dequeue();
-            if (path.Count == 0) return observations.Result("已到达目标。", moved);
+            while (path.Count > 0 && Vector2.Distance(center, path.Peek().ToVector2() * 64 + new Vector2(32)) <= WaypointTolerance)
+                path.Dequeue();
+            if (path.Count == 0) return observations.Result("已到达目标（A* 重算 " + replans + " 次）。", moved);
+
             var next = path.Peek();
-            if (!(exitGoal && next == goal) && !Observations.Walkable(location, next)) throw new ActionFault("PATH_BLOCKED", "路径被新的障碍阻挡。");
+            if (!(exitGoal && next == goal) && !Observations.Walkable(location, next))
+            {
+                // 被 NPC/宠物临时挡住：先等一会儿，别把路直接判死；仍不通再重算。
+                if (BlockedByCharacter(next))
+                {
+                    if (blockedSince == DateTime.MinValue) blockedSince = now;
+                    else if ((now - blockedSince).TotalSeconds < WaitForCharacterSeconds) return null;
+                    blockedSince = DateTime.MinValue;
+                }
+                if (!TryReplan())
+                    throw new ActionFault("PATH_BLOCKED", "路径被新的障碍挡住，A* 重算后仍不可达。");
+                return null;
+            }
+
             var delta = next.ToVector2() * 64 + new Vector2(32) - center;
             input.Direction = Math.Abs(delta.X) > Math.Abs(delta.Y)
                 ? delta.X > 0 ? 1 : 3
                 : delta.Y > 0 ? 2 : 0;
             return null;
         }
+
         public void Cancel()
         {
             input.Direction = -1;

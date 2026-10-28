@@ -27,11 +27,22 @@
 上游项目另有 `UPSTREAM.md` / `SPEC.md` 等说明文件留在原仓库，未复制到这里；
 如需追溯协议细节，请对照原路径。
 
-## 构建（未在本轮执行）
+## 本轮修改（2026-10-28，版本 0.1.2）
+
+- 新增 `Pathfinder.cs`：4 邻接 A*（曼哈顿启发，避开门/切图点，搜索上限 24000 格）。
+- `GameActions.cs` 的 `MoveAction` 改用 A*：
+  - 找不到路径时明确报 `PATH_BLOCKED` 并给出“换目标/先走到中间点”的提示；
+  - 中途被家具/NPC 挡住会等待 NPC 让路（≤1.5 秒），仍不通则最多重算 3 次路径；
+  - 连续 1.2 秒没有位移触发重算；到点容差从 5px 放宽到 12px，减少来回抖动。
+- 构建与部署：`dotnet build -c Release`，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-astar`）。
+
+## 构建
 
 ```powershell
 $env:STARDEW_GAME_PATH = "C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley"
 dotnet build .\AgentStardew.csproj -c Release
 ```
 
-本轮没有编译或安装 Mod，不能声称新目录下的构建已通过。
+本轮已在 2026-10-28 用 .NET SDK 9 构建通过（0 错误，1 个既有的 `Netcode` 引用警告），
+产物 `bin/Release/net6.0/AgentStardew.dll` 已部署到游戏 `Mods/AgentStardew/`。
