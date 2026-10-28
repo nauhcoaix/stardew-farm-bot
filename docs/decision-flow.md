@@ -275,6 +275,8 @@ flowchart LR
    `predicates.evaluate_all([completion], after)`
    - `False` → 把 `completed` 改判为 `failed`（**判据只能否决成功，不能把失败/未知升级为完成**）；
    - `None`（当前感知无法验证）→ 保留能力给出的状态，并在证据里标 `met=None`；
+   - 求值本身出错（类型不可比较、`in` 需要列表等）→ 同样按 `met=None` 处理，
+     证据里写 `completion_predicate_error`，不会反过来判失败，也不会让整轮运行崩掉；
    - 默认关闭：模型写的 `completion` 只记进 `decision_received`，
      `action_started` 里标 `completion_ignored=true`，不参与结算。
 2. 构造 `ActionResult`（`contracts/results.py`）：四态 `completed/failed/cancelled/unknown`、

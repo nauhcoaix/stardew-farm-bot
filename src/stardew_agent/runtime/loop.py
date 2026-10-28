@@ -24,7 +24,7 @@ from ..contracts.observation import Observation
 from ..contracts.results import ActionResult, Delegation, Progress
 from ..decision.binding import rebind_call
 from ..decision.freshness import check as check_freshness
-from ..decision.predicates import evaluate_all
+from ..decision.predicates import PredicateError, evaluate_all
 from ..repeat_guard.guard import GuardDecision, RepeatGuard
 from .budget import RunBudget
 from .events import Recorder
@@ -526,7 +526,12 @@ class AgentLoop:
         state, detail = progress.state, progress.detail
         evidence = dict(progress.evidence)
         if state == "completed" and self._pending_completion:
-            met, reasons = evaluate_all([self._pending_completion], after)
+            try:
+                met, reasons = evaluate_all([self._pending_completion], after)
+            except PredicateError as exc:
+                # 类型不可比较等运行期错误：当作“无法验证”，不能反过来判失败或让整轮运行崩掉。
+                met, reasons = None, ["判据无法求值：%s" % exc]
+                evidence["completion_predicate_error"] = str(exc)
             evidence["completion_predicate"] = {"met": met, "reasons": list(reasons)}
             if met is False:
                 state = "failed"

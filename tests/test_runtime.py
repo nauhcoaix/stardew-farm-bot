@@ -210,6 +210,25 @@ def test_模型判据能否决自报完成():
     assert result["evidence"]["completion_predicate"]["met"] is False
 
 
+def test_判据运行期不可比较时不崩且不否决成功():
+    harness = Harness(
+        [
+            decision_payload(
+                completion={"path": "player.position.x", "op": ">", "value": "abc"},
+            )
+        ],
+        requests=6,
+        use_model_completion=True,
+    )
+    summary = asyncio.run(harness.run(max_actions=1))
+    assert summary.completed == 1
+    result = summary.last_result
+    assert result is not None
+    assert result["state"] == "completed"
+    assert result["evidence"]["completion_predicate"]["met"] is None
+    assert "completion_predicate_error" in result["evidence"]
+
+
 def test_默认忽略模型自报的完成判据():
     harness = Harness(
         [decision_payload(completion={"path": "player.position.x", "op": "==", "value": 99})],
