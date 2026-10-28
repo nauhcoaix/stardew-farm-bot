@@ -48,16 +48,23 @@ internal static class Pathfinder
         return null;
     }
 
-    private static int Heuristic(Point from, Point target) =>
-        Math.Abs(from.X - target.X) + Math.Abs(from.Y - target.Y);
-
-    private static bool IsWarpTile(GameLocation location, Point tile)
+    public static bool IsWarp(GameLocation location, Point tile)
     {
         foreach (var warp in location.warps)
             if (warp.X == tile.X && warp.Y == tile.Y) return true;
-        var touch = location.doesTileHaveProperty(tile.X, tile.Y, "TouchAction", "Back");
-        return touch?.StartsWith("Warp", StringComparison.Ordinal) == true;
+        //: 门大多是 TouchAction/Action 上的 "Warp ..."，只把它们当目标格，不当中途通路。
+        foreach (var property in new[] { "TouchAction", "Action" })
+        {
+            var value = location.doesTileHaveProperty(tile.X, tile.Y, property, "Back");
+            if (value?.StartsWith("Warp", StringComparison.Ordinal) == true) return true;
+        }
+        return false;
     }
+
+    private static int Heuristic(Point from, Point target) =>
+        Math.Abs(from.X - target.X) + Math.Abs(from.Y - target.Y);
+
+    private static bool IsWarpTile(GameLocation location, Point tile) => IsWarp(location, tile);
 
     private static List<Point> Reconstruct(Dictionary<Point, Point?> parent, Point end)
     {

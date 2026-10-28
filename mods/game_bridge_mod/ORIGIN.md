@@ -37,6 +37,16 @@
 - 构建与部署：`dotnet build -c Release`，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-astar`）。
 
+## 本轮修改（2026-10-28，版本 0.1.3）
+
+- 修“出农舍时站在门口不动”：
+  - `MoveAction` 对出口不再用 12px 容差提前结束，改用 3px 并**等游戏真正切图**（≤2 秒）；
+  - 出口格是 `warps` / `TouchAction` / `Action` 上的 `Warp` 时，A* 允许把它当作终点（仍不允许中途穿过）；
+  - 走不进去的门先站到相邻格，自动按一次交互键（`checkAction`），再等切图；
+  - 到门口却切不了图时返回明确原因（门没开/需要钥匙/需要先对话），不再反复“已到达”。
+- 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-exitfix`）。
+
 ## 构建
 
 ```powershell
@@ -44,5 +54,5 @@ $env:STARDEW_GAME_PATH = "C:\Program Files (x86)\Steam\steamapps\common\Stardew 
 dotnet build .\AgentStardew.csproj -c Release
 ```
 
-本轮已在 2026-10-28 用 .NET SDK 9 构建通过（0 错误，1 个既有的 `Netcode` 引用警告），
+2026-10-28 已用 .NET SDK 9 构建通过（0 错误，1 个既有的 `Netcode` 引用警告），
 产物 `bin/Release/net6.0/AgentStardew.dll` 已部署到游戏 `Mods/AgentStardew/`。

@@ -58,24 +58,33 @@ public static class GameActions
         private readonly GameLocation location = Game1.currentLocation;
         private readonly string? reference;
         private readonly bool exitGoal;
+        private readonly bool exitTileWalkable;
         private const int MaxReplans = 3;
         private const double StallSeconds = 1.2;
         private const double WaitForCharacterSeconds = 1.5;
+        private const double ExitWaitSeconds = 2.0;
         private const float WaypointTolerance = 12f;
+        private const float ExitTolerance = 3f;
         private bool nearGoal;
         private Point goal;
         private Queue<Point> path;
         private Vector2 lastPosition = Game1.player.Position;
         private DateTime lastMoved = DateTime.UtcNow;
         private DateTime blockedSince = DateTime.MinValue;
+        private DateTime exitSince = DateTime.MinValue;
+        private bool exitActionTried;
+        private string? exitActionError;
         private int replans;
         private bool moved;
 
         public MoveAction(Observations observations, IReflectionHelper reflection, Point tile, Observations.Target? target, string? reference)
         {
             this.observations = observations; this.reference = reference;
-            exitGoal = target?.Identity is Warp || location.warps.Any(w => w.X == tile.X && w.Y == tile.Y);
-            nearGoal = target != null && !exitGoal;
+            //: 出口 = 传送点或门；普通对象/地块只走到旁边。
+            exitGoal = target?.Identity is Warp || Pathfinder.IsWarp(location, tile);
+            exitTileWalkable = Observations.Walkable(location, tile);
+            //: 能踩上去就直接踩到格心；交互型门先站到相邻格，再按一次交互。
+            nearGoal = exitGoal ? !exitTileWalkable : target != null;
             goal = tile;
             path = BuildPath();
             simulator = reflection.GetField<IInputSimulator?>(typeof(Game1), "inputSimulator");
@@ -106,6 +115,9 @@ public static class GameActions
             replans++;
             lastMoved = DateTime.UtcNow;
             blockedSince = DateTime.MinValue;
+            exitSince = DateTime.MinValue;
+            exitActionTried = false;
+            exitActionError = null;
             return true;
         }
 
@@ -116,18 +128,34 @@ public static class GameActions
             return false;
         }
 
+        //: 走不进去的门（建筑入口常见）：站到相邻格后按一次交互键，让游戏自己切图。
+        private bool TryOpenExit()
+        {
+            if (exitActionTried) return exitActionError == null;
+            exitActionTried = true;
+            try
+            {
+                Reach(goal);
+                if (!location.checkAction(new xTile.Dimensions.Location(goal.X, goal.Y), Game1.viewport, Game1.player))
+                    exitActionError = "目标格没有可用交互（可能不是门）";
+            }
+            catch (Exception error) { exitActionError = error.Message; }
+            return exitActionError == null;
+        }
+
         public object? Tick()
         {
             input.Direction = -1;
             if (!ReferenceEquals(simulator.GetValue(), input)) throw new ActionFault("BUSY", "游戏模拟输入已被其他控制器接管。");
-            if (!ReferenceEquals(location, Game1.currentLocation)) return observations.Result("移动触发场景切换，请重新观察。");
+            if (!ReferenceEquals(location, Game1.currentLocation))
+                return observations.Result(exitGoal ? "已通过出口进入新场景。" : "移动触发场景切换，请重新观察。");
             if (reference != null)
             {
                 var current = observations.Resolve(reference).Tile;
                 if (current != goal)
                 {
                     goal = current;
-                    nearGoal = true;
+                    nearGoal = exitGoal ? !exitTileWalkable : true;
                     if (!TryReplan()) throw new ActionFault("PATH_BLOCKED", "目标移动后 A* 找不到新路径。");
                 }
             }
@@ -142,7 +170,38 @@ public static class GameActions
                 lastMoved = now;
                 blockedSince = DateTime.MinValue;
             }
-            else if ((now - lastMoved).TotalSeconds > StallSeconds)
+
+            var center = Game1.player.GetBoundingBox().Center.ToVector2();
+            var tolerance = exitGoal ? ExitTolerance : WaypointTolerance;
+            while (path.Count > 0 && Vector2.Distance(center, path.Peek().ToVector2() * 64 + new Vector2(32)) <= tolerance)
+                path.Dequeue();
+
+            if (path.Count == 0)
+            {
+                if (!exitGoal) return observations.Result("已到达目标（A* 重算 " + replans + " 次）。", moved);
+                //: 到门口不等于完成：等游戏真正切图，避免停在门边反复报“已到达”。
+                if (exitSince == DateTime.MinValue)
+                {
+                    exitSince = now;
+                    if (!exitTileWalkable && !TryOpenExit())
+                        return observations.Result(
+                            exitActionError != null
+                                ? $"已到门口，但无法打开：{exitActionError}。请重新观察。"
+                                : "已到门口，但门没有可用交互。请重新观察。",
+                            moved);
+                }
+                //: 能踩的出口格也可能需要按键：站稳后补一次交互。
+                if (!exitActionTried && (now - exitSince).TotalSeconds > 0.8) TryOpenExit();
+                if ((now - exitSince).TotalSeconds > ExitWaitSeconds)
+                    return observations.Result(
+                        exitActionError != null && !exitTileWalkable
+                            ? $"在门口等了 {ExitWaitSeconds:0.0} 秒仍未切换场景（{exitActionError}）；请重新观察后再决定。"
+                            : $"在门口等了 {ExitWaitSeconds:0.0} 秒仍未切换场景；门可能没开、需要钥匙或需要先对话。请重新观察。",
+                        moved);
+                return null;
+            }
+
+            if ((now - lastMoved).TotalSeconds > StallSeconds)
             {
                 if (!TryReplan())
                     throw new ActionFault(
@@ -150,11 +209,6 @@ public static class GameActions
                         $"连续 {StallSeconds:0.0} 秒没有前进，A* 重算 {replans} 次仍未脱困。"
                     );
             }
-
-            var center = Game1.player.GetBoundingBox().Center.ToVector2();
-            while (path.Count > 0 && Vector2.Distance(center, path.Peek().ToVector2() * 64 + new Vector2(32)) <= WaypointTolerance)
-                path.Dequeue();
-            if (path.Count == 0) return observations.Result("已到达目标（A* 重算 " + replans + " 次）。", moved);
 
             var next = path.Peek();
             if (!(exitGoal && next == goal) && !Observations.Walkable(location, next))

@@ -30,7 +30,7 @@ class MovePort(Protocol):
 
 
 def _resolve_target(params: Mapping[str, Any], observation: Observation) -> tuple[tuple[int, int], str | None]:
-    """解析目标：坐标或现场对象的 ``ref``（取其地块）。"""
+    """解析目标：坐标或现场对象的 ``ref``（取其地块）。坐标为 -1 的轴保持当前位置。"""
     near = params.get("near")
     if near:
         entity = observation.entity(str(near))
@@ -43,7 +43,14 @@ def _resolve_target(params: Mapping[str, Any], observation: Observation) -> tupl
         if tile.get("x") is None or tile.get("y") is None:
             raise PremiseFailed("目标实体没有地块坐标：%s" % near)
         return (int(tile["x"]), int(tile["y"])), str(near)
-    return (int(params["x"]), int(params["y"])), None
+    x, y = int(params["x"]), int(params["y"])
+    if x == -1 or y == -1:
+        here = position_of(observation)
+        if here is None:
+            raise PremiseFailed("x/y 用 -1 表示保持当前坐标，但这次观察里没有玩家位置")
+        x = here[0] if x == -1 else x
+        y = here[1] if y == -1 else y
+    return (x, y), None
 
 
 class MoveDelegation(DelegationBase):
@@ -65,11 +72,32 @@ class MoveDelegation(DelegationBase):
         self.start_position = observation.position()
         self.last_request_position = position_of(observation)
         self._start_observation = observation
+        self.exit_goal = self._detect_exit(observation)
         self.record("target_tile", {"x": self.target[0], "y": self.target[1]})
         self.record("target_ref", self.ref)
+        self.record("exit_goal", self.exit_goal)
         self.record("start_position", self.start_position)
 
+    def _detect_exit(self, observation: Observation) -> bool:
+        """目标是出口/门时，只有真的切图才算完成；站在门边不算。"""
+        entity = observation.entity(self.ref) if self.ref else None
+        if entity is None:
+            for candidate in observation.entities:
+                tile = candidate.get("tile") or {}
+                if (tile.get("x"), tile.get("y")) != (self.target[0], self.target[1]):
+                    continue
+                if str(candidate.get("kind") or "") in {"exit", "door"}:
+                    entity = candidate
+                    break
+        if entity is None:
+            return False
+        kind = str(entity.get("kind") or "")
+        action = str(entity.get("action") or "").lower()
+        return kind in {"exit", "door"} or "warp" in action
+
     def _reached(self, observation: Observation) -> bool:
+        if self.exit_goal:
+            return False  # 出口以真正切换地图为准，避免“站在门口=已到达”
         here = position_of(observation)
         if here is None:
             return False
@@ -79,7 +107,15 @@ class MoveDelegation(DelegationBase):
         if self.cancelled:
             return self.cancelled_progress()
         if self.steps and scene_changed(self._start_observation, observation):
-            return self.finish("failed", "移动过程中地图/存档已变，重新观察后再决定")
+            #: A* 不会把切图点当中间格，所以移动中切图基本就是走到了出口/门。
+            return self.finish(
+                "completed",
+                "已通过出口进入新场景" if self.exit_goal else "移动过程中切换了地图",
+                final_position=observation.position(),
+                location=observation.location,
+                requests=self.steps,
+                positions=self.evidence.get("positions"),
+            )
         here = position_of(observation)
         if self._reached(observation):
             return self.finish(
@@ -92,7 +128,9 @@ class MoveDelegation(DelegationBase):
         if self.steps and here == self.last_request_position:
             return self.finish(
                 "failed",
-                "上一次移动没有改变位置（碰撞、菜单或目标不可达）",
+                "上一次移动没有改变位置：门可能没开、需要钥匙或目标不可达"
+                if self.exit_goal
+                else "上一次移动没有改变位置（碰撞、菜单或目标不可达）",
                 final_position=observation.position(),
             )
         if self.steps >= self.max_steps:
@@ -127,14 +165,14 @@ def move_ability(port: MovePort, *, clock: Callable[[], float] = time.monotonic)
         version="1.0.0",
         summary="让人物走到指定坐标，或走到某个现场对象的相邻格",
         params={
-            "x": "目标格 x（与 near 二选一）",
-            "y": "目标格 y（与 near 二选一）",
+            "x": "目标格 x（与 near 二选一；-1 表示保持当前 x）",
+            "y": "目标格 y（与 near 二选一；-1 表示保持当前 y）",
             "near": "现场实体 ref（与 x/y 二选一）",
             "max_steps": "本次委托最多下发几次移动（1～6，默认 3）",
         },
         observation_needs=("player.position", "player.canMove", "entities", "menu", "location"),
         scope="只移动当前人物；不选择目的地、不改变物品或对象状态",
-        completion="人物位于目标地块或其四邻格之一（以重新观察的位置为准）",
+        completion="人物位于目标地块或其四邻格之一；目标是出口/门时，以真正切换地图为完成",
         limits=("max_steps<=6", "每次委托只服务一个目标"),
     )
 
@@ -145,11 +183,11 @@ def move_ability(port: MovePort, *, clock: Callable[[], float] = time.monotonic)
             if params.get("x") is not None or params.get("y") is not None:
                 raise Rejected("near 与 x/y 不能同时给出")
             return {"near": require_str(params, "near"), "max_steps": max_steps}
-        return {
-            "x": require_int(params, "x", low=0, high=400),
-            "y": require_int(params, "y", low=0, high=400),
-            "max_steps": max_steps,
-        }
+        x = require_int(params, "x", low=-1, high=400)
+        y = require_int(params, "y", low=-1, high=400)
+        if x == -1 and y == -1:
+            raise Rejected("x 和 y 不能同时为 -1：-1 表示该轴保持当前位置，至少给一个真实坐标")
+        return {"x": x, "y": y, "max_steps": max_steps}
 
     def premises(params: Mapping[str, Any], observation: Observation) -> list[PremiseCheck]:
         can_move = observation.field("player.canMove")

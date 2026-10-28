@@ -75,7 +75,7 @@ def test_移动参数只接受坐标或ref之一():
     with pytest.raises(Rejected):
         spec.validate({"x": 1, "y": 2, "speed": "run"})
     with pytest.raises(Rejected):
-        spec.validate({"x": -1, "y": 2})
+        spec.validate({"x": -2, "y": 2})
 
 
 def test_移动到达即完成并记录位置():
@@ -100,6 +100,72 @@ def test_移动没有让位置变化就失败():
     progress = run_step(delegation, observe(x=10, y=10))
     assert progress.state == "failed"
     assert "没有改变位置" in progress.detail
+
+
+def test_出口切图算移动完成而不是失败():
+    port = FakeMovePort()
+    spec = move_ability(port)
+    door = entity("@s1:e9", "exit", "出口 → Farm", 5, 9, action="Warp 64 15 Farm")
+    inside = observe(x=5, y=10, location="FarmHouse", entities=[door])
+    delegation = spec.start(spec.validate({"near": "@s1:e9", "max_steps": 2}), inside, "a-exit")
+    assert run_step(delegation, inside).state == "running"
+    outside = observe(x=64, y=15, location="Farm", entities=[])
+    result = run_step(delegation, outside)
+    assert result.state == "completed"
+    assert "新场景" in result.detail
+    assert result.evidence["location"] == "Farm"
+    assert result.evidence["exit_goal"] is True
+
+
+def test_站在门口没切图不算到达():
+    port = FakeMovePort()
+    spec = move_ability(port)
+    door = entity("@s1:e9", "exit", "出口 → Farm", 5, 9)
+    inside = observe(x=5, y=10, location="FarmHouse", entities=[door])
+    delegation = spec.start(spec.validate({"near": "@s1:e9", "max_steps": 2}), inside, "a-exit2")
+    run_step(delegation, inside)
+    result = run_step(delegation, inside)
+    assert result.state == "failed"
+    assert "门可能没开" in result.detail
+
+
+def test_坐标负一表示保持当前轴():
+    port = FakeMovePort()
+    spec = move_ability(port)
+    params = spec.validate({"x": -1, "y": 15})
+    assert params == {"x": -1, "y": 15, "max_steps": 3}
+    with pytest.raises(Rejected):
+        spec.validate({"x": -1, "y": -1})
+    start = observe(x=10, y=10)
+    delegation = spec.start(params, start, "a-axis")
+    assert delegation.target == (10, 15)
+    assert run_step(delegation, start).state == "running"
+    assert port.calls == [(10, 15, None)]
+
+
+def test_坐标移动中途切图也按完成处理():
+    port = FakeMovePort()
+    spec = move_ability(port)
+    start = observe(x=5, y=10, location="FarmHouse")
+    delegation = spec.start(spec.validate({"x": 5, "y": 5}), start, "a-warp")
+    assert delegation.exit_goal is False
+    run_step(delegation, start)
+    outside = observe(x=64, y=15, location="Farm")
+    result = run_step(delegation, outside)
+    assert result.state == "completed"
+    assert "切换了地图" in result.detail
+
+
+def test_坐标落在出口格也会等切图():
+    port = FakeMovePort()
+    spec = move_ability(port)
+    door = entity("@s1:e9", "exit", "出口 → Farm", 5, 9)
+    inside = observe(x=5, y=10, location="FarmHouse", entities=[door])
+    delegation = spec.start(spec.validate({"x": 5, "y": 9, "max_steps": 2}), inside, "a-exit3")
+    assert delegation.exit_goal is True
+    run_step(delegation, inside)
+    outside = observe(x=64, y=15, location="Farm", entities=[])
+    assert run_step(delegation, outside).state == "completed"
 
 
 def test_菜单打开或不能移动时前提明确失败():
