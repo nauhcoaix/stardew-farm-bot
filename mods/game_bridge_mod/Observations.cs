@@ -33,7 +33,10 @@ public sealed class Observations
     }
     public static object Tile(Point p) => new { x = p.X, y = p.Y };
     public static Point Position => Game1.player.TilePoint;
-    public static bool InBounds(GameLocation location, Point p) => p.X >= 0 && p.Y >= 0 && p.X < location.Map.Layers[0].LayerWidth && p.Y < location.Map.Layers[0].LayerHeight;
+    public static bool InBounds(GameLocation location, Point p) =>
+        p.X >= 0 && p.Y >= 0 &&
+        p.X < location.Map.Layers.Max(layer => layer.LayerWidth) &&
+        p.Y < location.Map.Layers.Max(layer => layer.LayerHeight);
     public static bool Walkable(GameLocation location, Point p)
     {
         if (!InBounds(location, p)) return false;

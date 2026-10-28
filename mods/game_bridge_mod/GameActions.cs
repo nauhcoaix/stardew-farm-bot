@@ -78,6 +78,7 @@ public static class GameActions
         private string? exitActionError;
         private int replans;
         private bool moved;
+        private bool clampedGoal;
         private Point lastTile = Observations.Position;
 
         public MoveAction(Observations observations, IReflectionHelper reflection, Point tile, Observations.Target? target, string? reference)
@@ -99,18 +100,35 @@ public static class GameActions
         //: 目标格本身走不进去（树/石头/家具/水）：退一步“走到旁边”，别直接报不可达。
         private void RelaxIfBlockedGoal()
         {
-            if (nearGoal || exitGoal || Observations.Walkable(location, goal)) return;
+            if (nearGoal || exitGoal || !Observations.InBounds(location, goal)) return;
+            if (Observations.Walkable(location, goal)) return;
             nearGoal = true;
             replans = 0;
+        }
+
+        //: 出口/门可能在可见边界之外（农舍出口就在地图最后一行之下）：把 A* 终点夹回地图内；
+        //: 人走到最近格后仍朝真正的传送格压，靠游戏触发切图。
+        private Point PathTarget()
+        {
+            var width = Math.Max(1, location.Map.Layers.Max(layer => layer.LayerWidth));
+            var height = Math.Max(1, location.Map.Layers.Max(layer => layer.LayerHeight));
+            var target = new Point(Math.Clamp(goal.X, 0, width - 1), Math.Clamp(goal.Y, 0, height - 1));
+            clampedGoal = target != goal;
+            return target;
+        }
+
+        private List<Point>? Find(Point target)
+        {
+            var allowExit = exitGoal && target == goal;
+            var near = nearGoal || (target != goal && !Observations.Walkable(location, target));
+            return Pathfinder.Find(location, Observations.Position, target, near, allowExit);
         }
 
         //: 用 A* 找路（4 邻接、曼哈顿启发）；找不到就明确报“不可达”，不原地打转。
         private Queue<Point> BuildPath()
         {
-            if (!Observations.InBounds(location, goal) && !exitGoal)
-                throw new ActionFault("INVALID_ARGUMENT", "坐标超出地图范围。");
             RelaxIfBlockedGoal();
-            var nodes = Pathfinder.Find(location, Observations.Position, goal, nearGoal, exitGoal);
+            var nodes = Find(PathTarget());
             if (nodes == null)
                 throw new ActionFault(
                     "PATH_BLOCKED",
@@ -123,7 +141,7 @@ public static class GameActions
         {
             RelaxIfBlockedGoal();
             if (replans >= MaxReplans) return false;
-            var nodes = Pathfinder.Find(location, Observations.Position, goal, nearGoal, exitGoal);
+            var nodes = Find(PathTarget());
             if (nodes == null) return false;
             path = new Queue<Point>(nodes);
             replans++;
@@ -210,7 +228,9 @@ public static class GameActions
 
             if (path.Count == 0)
             {
-                if (!exitGoal) return observations.Result("已到达目标（A* 重算 " + replans + " 次）。", moved);
+                if (!exitGoal) return observations.Result(
+                    "已到达目标（A* 重算 " + replans + " 次）" +
+                    (clampedGoal ? "；目标在地图外，已在最近可走格停下" : "") + "。", moved);
                 //: 到门口不等于完成：保持朝门口压，等游戏真正切图。
                 if (exitSince == DateTime.MinValue) exitSince = now;
                 if (Vector2.Distance(center, targetCenter) > 2f)

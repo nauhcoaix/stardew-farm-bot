@@ -237,7 +237,7 @@ flowchart LR
 
 | 能力 | 位置 | 一步做什么 | 怎么验证 |
 |---|---|---|---|
-| `move_to` | `abilities/navigation.py:62` | mod 内 A* 算路后逐步注入方向 | 重新观察位置：普通目标到目标格或四邻格即完成；出口/门以真正切图为完成；坐标 `-1` 的轴沿用当前位置（两个 -1 即原地）；NPC/动物绕行，卡住按格子重算（≤3 次），仍不通则明确报 `PATH_BLOCKED`（带起终点） |
+| `move_to` | `abilities/navigation.py:62` | mod 内 A* 算路后逐步注入方向 | 重新观察位置：**坐标目标要真的走到该格**（目标格明确不可站立时才接受相邻格）；ref 目标到相邻格即完成；出口/门以真正切图为完成（出口在地图外时 mod 会夹到最近格并继续朝传送格压）；坐标 `-1` 的轴沿用当前位置（两个 -1 即原地） |
 | `explore_area` | `abilities/explore.py` | 从注入的前沿候选里挑最近的点，逐步移动 | 每步用位置变化确认；没有候选即完成，到上限报部分完成 |
 | `farm_routine` | `abilities/routines.py` | 从现场挑一个目标，内部依次起 `select_item`/`move_to`/`use` 子委托 | 每个目标沿用 `use` 的 `expect` 前后观察判定；预算/步数/体力不足时如实报告部分完成 |
 | `select_item` | `abilities/interaction.py:72` | 一次 `select` | 快照 `player.selectedSlot` 是否变化 |

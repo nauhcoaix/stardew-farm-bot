@@ -101,13 +101,30 @@ class MoveDelegation(DelegationBase):
         action = str(entity.get("action") or "").lower()
         return kind in {"exit", "door"} or "warp" in action
 
+    def _target_unreachable(self, observation: Observation) -> bool:
+        """目标格明确不可站立（树/石头/水/家具）时，站在相邻格就算完成。"""
+        for candidate in observation.entities:
+            tile = candidate.get("tile") or {}
+            if (tile.get("x"), tile.get("y")) != (self.target[0], self.target[1]):
+                continue
+            if candidate.get("passable") is False or candidate.get("refillable"):
+                return True
+        return False
+
     def _reached(self, observation: Observation) -> bool:
         if self.exit_goal:
             return False  # 出口以真正切换地图为准，避免“站在门口=已到达”
         here = position_of(observation)
         if here is None:
             return False
-        return abs(here[0] - self.target[0]) + abs(here[1] - self.target[1]) <= 1
+        distance = abs(here[0] - self.target[0]) + abs(here[1] - self.target[1])
+        if self.ref is not None:
+            return distance <= 1
+        if distance == 0:
+            return True
+        #: 坐标目标默认要真的走到该格；只有目标格明确不可站立时才接受相邻格，
+        #: 否则“站在旁边=已到达”会让模型以为已经移动过。
+        return distance <= 1 and self._target_unreachable(observation)
 
     async def step(self, observation: Observation) -> Progress:
         if self.cancelled:
@@ -183,7 +200,7 @@ def move_ability(port: MovePort, *, clock: Callable[[], float] = time.monotonic)
         },
         observation_needs=("player.position", "player.canMove", "entities", "menu", "location"),
         scope="只移动当前人物；不选择目的地、不改变物品或对象状态",
-        completion="人物位于目标地块或其四邻格之一；目标是出口/门时，以真正切换地图为完成",
+        completion="坐标目标要真的走到该格（目标格不可站立时才接受相邻格）；ref 目标到相邻格即可；出口/门以真正切换地图为完成",
         limits=("max_steps<=6", "每次委托只服务一个目标"),
     )
 

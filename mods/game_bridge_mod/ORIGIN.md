@@ -70,6 +70,17 @@
 - 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-warpexit`）。
 
+## 本轮修改（2026-10-28，版本 0.1.6）
+
+- 修“出口在地图边界外”：农舍出口传送格在 (3,12)，但地图可见边界只到 y=11，
+  A* 直接把界外格当终点 → 永远走不到 → `PATH_BLOCKED`。
+  - A* 终点先夹回地图内（最近格），人走到该格后**继续朝真正的传送格方向压**，
+    靠游戏“撞到传送格”切图；
+  - `Observations.InBounds` 改用所有图层尺寸的最大值，避免用错层导致边界判断偏小；
+  - 普通坐标超出地图时也夹到最近格并提示“目标在地图外”，不再直接报 `INVALID_ARGUMENT`。
+- 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-clamp`）。
+
 ## 构建
 
 ```powershell

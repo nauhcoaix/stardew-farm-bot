@@ -150,6 +150,25 @@ def test_站在门口没切图不算到达():
     assert "门可能没开" in result.detail
 
 
+def test_坐标目标相邻不再算到达():
+    port = FakeMovePort()
+    spec = move_ability(port)
+    start = observe(x=11, y=10)
+    delegation = spec.start(spec.validate({"x": 12, "y": 10}), start, "a-exact")
+    assert run_step(delegation, start).state == "running"
+    assert port.calls == [(12, 10, None)]
+
+
+def test_坐标目标格不可站立时接受相邻格():
+    port = FakeMovePort()
+    spec = move_ability(port)
+    tree = entity("@s1:e1", "object", "树", 12, 10, passable=False)
+    start = observe(x=11, y=10, entities=[tree])
+    delegation = spec.start(spec.validate({"x": 12, "y": 10}), start, "a-adjacent")
+    assert run_step(delegation, start).state == "completed"
+    assert port.calls == []
+
+
 def test_坐标负一表示保持当前轴():
     port = FakeMovePort()
     spec = move_ability(port)
