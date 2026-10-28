@@ -347,6 +347,16 @@ def test_上下文包含人类指令并限制条数():
     assert any("instructions" in line for line in context["provided_knowledge"])
 
 
+def test_满包时召回查询带状态词():
+    from stardew_agent.cli.wiring import recall_query
+
+    observation = observe(
+        inventory_rows=[inventory(slot, "木材", 50, itemId="(O)388") for slot in range(12)]
+    )
+    query = recall_query(observation, "整理背包")
+    assert "背包满" in query
+
+
 def test_上下文报告背包满与可放箱子的空格():
     wood = [inventory(slot, "木材", 50, itemId="(O)388") for slot in range(12)]
     spot = entity("@s1:t1", "tile", "地块", 11, 10)
@@ -358,36 +368,6 @@ def test_上下文报告背包满与可放箱子的空格():
     assert state["free_slots"] == 0
     assert state["full"] is True
     assert state["wood"] == 600
-    assert {"x": 11, "y": 10, "distance": 1} in state["place_chest_tiles"]
-
-
-def test_候选保留放箱子的参数():
-    observation = observe(x=10, y=10)
-    context = build_context(
-        observation=observation,
-        candidates={
-            "items": [
-                {
-                    "id": "placement:11:10",
-                    "mode": "inventory",
-                    "op": "place_chest",
-                    "tx": 11,
-                    "ty": 10,
-                    "tile": {"x": 11, "y": 10},
-                    "name": "可放箱子的空格",
-                }
-            ],
-            "truncated": False,
-        },
-    )
-    row = context["candidates"]["items"][0]
-    assert (row["op"], row["tx"], row["ty"]) == ("place_chest", 11, 10)
-
-
-def test_提示词在背包满时给出去向():
-    system = build_messages({})[0]["content"]
-    assert "inventory_state.full" in system
-    assert "place_chest" in system
 
 
 def test_提示词要求回执用户指令():

@@ -37,10 +37,6 @@ BASE_PROMPT = """你在通过一组已注册的能力操作星露谷里的一个
    （价格与库存来自游戏，不要猜）；界面点击用 menu_click（坐标来自 inspect_menu）、关闭用 close_menu；
    钓鱼用 fish。买什么、买多少由你决定，执行器只负责校验与验证结果。
    制作与容器操作用 craft_item / inventory_action（chest_put/chest_get/ship/place_chest）。
-   背包满（inventory_state.full=true）时不要再买/收获：有 50 木材就用
-   inventory_action op=place_chest，tx/ty 取 inventory_state.place_chest_tiles，
-   再用 chest_put 把不常用物品放进去；没木材就 ship 或先把东西放回已有箱子。
-   满包时 craft_item 会被拒绝，不要指望产物掉在地上。
 4. 字段缺失、unknowns 或 unsupported 表示未知，不等于“禁止”或“不存在”。可以先用能力观察或创造前提。
 5. recent_actions 与 last_result 是本系统的真实执行结果：
    failed（失败）、unknown（结果未知）、blocked（未下发就被拦）都要看清，

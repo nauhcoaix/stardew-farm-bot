@@ -10,7 +10,7 @@
 
 | 项目 | 状态 |
 |---|---|
-| 两个 C# Mod | `game_bridge_mod` 已改（A* + 出口切图 + CanMove 自愈 + 满包保护）并编译安装为 0.1.8；`fishing_mod` 仍为原样、未重新编译 |
+| 两个 C# Mod | `game_bridge_mod` 已改（A* + 出口切图 + CanMove 自愈 + 满包错误码）并编译安装为 0.1.9；`fishing_mod` 仍为原样、未重新编译 |
 | 九项白名单模块 | 已提取为独立包，去掉旧 `MemoryStore` / `WorkPlanner` 接线 |
 | 新模块（契约、运行时、决策、经验、能力、CLI） | 已实现，含离线测试 |
 | 离线测试 | `pytest` 全绿（不依赖游戏、模型账户或桌面） |
@@ -32,7 +32,7 @@
 | `buy_item` | 买种子/物品 | 价格与库存来自游戏 `menudump`；校验钱、单价上限、背包变化；**背包满时拒绝**（不会买东西掉地上） |
 | `menu_click` | 点击菜单坐标 | 普通菜单或背包区域；坐标来自 `inspect_menu` |
 | `close_menu` | 关闭菜单 | 商店/对话/背包通用 |
-| `craft_item` | 按配方制作 | 材料由游戏扣除；验证背包该物品增加；**背包满时直接拒绝**（先放箱子/发货，不会把产物丢地上） |
+| `craft_item` | 按配方制作 | 材料由游戏扣除；验证背包该物品增加；**背包满时直接拒绝**（不会把产物丢地上） |
 | `inventory_action` | 箱子/发货/放箱子 | `op=chest_put/chest_get/ship/place_chest`；按背包变化验证；`place_chest` 直接消耗 50 木材，格子要在 1～2 格内 |
 | `fish` | 委托独立钓鱼 Mod | 需要已安装 `StandaloneFishingSkill` |
 | 组合技能 | 已验证的步骤序列 | 由学习模块晋级后注册 |
@@ -278,9 +278,12 @@ start-agent.bat inbox drop --id ins-xxxxxxxx   # 改主意就撤销
 
 - 只认 `completed` / `failed` 作为证据；`unknown` / `cancelled` 不写经验；
 - 同一主张（地点 + 能力 + 关键参数，例如“Farm：farm_routine task=water 能完成”）合并证据；
+- 动作带状态前提时（例如 `INVENTORY_FULL` 或 `player.freeSlots == 0`），主张会写成
+  “背包满时 …”，前提里保留 `player.freeSlots == 0`；
 - 同一存档内 **3 次可区分的真实成功** → `verified`；已验证经验再遇到同一主张的失败 →
   退回 `candidate`（反例与旧版本都保留，不删历史）；
 - 下一轮决策通过 `recall` 把相关经验放进上下文 `experiences`（`verified` 优先）；
+  召回 query 会带当前状态词（如“背包满”），带状态前提的经验才有机会被检索到；
   模型看到的 `candidate` 只是候选，不能当事实；
 - `farm_routine` 的重复成功会生成**候选技能**；**取消一次该例行程序**会作为停止测试证据，
   满足“3 次成功 + 1 次取消”才晋级为可复用技能；已验证技能再失败会退回候选；

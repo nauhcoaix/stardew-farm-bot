@@ -210,7 +210,11 @@ class BuyItemDelegation(DelegationBase):
                 return self.finish("unknown", "购买请求失败：%s（先重新观察背包与金钱，不要直接重发）" % exc)
             self.record("response", dict(response))
             if response.get("ok") is False:
-                return self.finish("failed", "购买被拒绝：%s" % (response.get("reason") or "未知原因"))
+                return self.finish(
+                    "failed",
+                    "购买被拒绝：%s" % (response.get("reason") or "未知原因"),
+                    error=str(response.get("code") or "") or None,
+                )
             return Progress("running", "已下单，等待观察确认", dict(self.evidence))
 
         self.steps += 1
@@ -338,7 +342,7 @@ def buy_item_ability(port: ShopPort, *, clock: Callable[[], float] = time.monoto
     descriptor = AbilityDescriptor(
         id="buy_item",
         version="1.0.0",
-        summary="在已打开的商店里按名称购买商品（价格与库存来自游戏 menudump）",
+        summary="在已打开的商店里按名称购买商品（价格与库存来自游戏 menudump；商品放不进背包时拒绝）",
         params={
             "item": "商品名称（模糊匹配，例如 防风草）",
             "qty": "购买数量（1～50，默认 1）",
@@ -347,7 +351,7 @@ def buy_item_ability(port: ShopPort, *, clock: Callable[[], float] = time.monoto
         observation_needs=("menu", "inventory", "player.money"),
         scope="只买指定商品；不选种子、不决定种什么；钱不够或没有该商品时直接失败",
         completion="金钱减少且背包出现该商品；拿不到证据时报告 unknown",
-        limits=("qty<=50", "一次委托只下一次购买"),
+        limits=("qty<=50", "一次委托只下一次购买", "背包满时拒绝（INVENTORY_FULL）"),
     )
 
     def validate(params: Mapping[str, Any]) -> Mapping[str, Any]:

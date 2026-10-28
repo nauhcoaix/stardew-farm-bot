@@ -119,3 +119,16 @@ def test_容器动作参数与前提校验():
     checks = spec.check_premises(spec.validate({"op": "ship", "slot": 0}), observe(menu=menu_row(["@s1:m1"])))
     assert any(check.met is False for check in checks)
 
+
+
+def test_满包制作被拒绝时保留错误码():
+    port = FakeInventoryPort({"ok": False, "reason": "背包满了", "code": "INVENTORY_FULL"})
+    spec = craft_item_ability(port)
+    observation = observe(inventory_rows=[inventory(0, "木材", 50, itemId="(O)388")])
+    delegation = spec.start(spec.validate({"item": "箱子"}), observation, "a-full")
+
+    progress = asyncio.run(delegation.step(observation))
+
+    assert progress.state == "failed"
+    assert progress.evidence["error"] == "INVENTORY_FULL"
+

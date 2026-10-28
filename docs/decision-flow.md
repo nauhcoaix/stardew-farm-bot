@@ -113,7 +113,6 @@ flowchart LR
 2. 生成候选：`build_candidates`（`cli/wiring.py`）→ `exploration/candidates.py:candidates`
    - 地形前沿候选带 `x/y`、未知邻格数、是否访问过；
    - 交互候选带 `id`（稳定 target_id）、`ref`、`tile`、语义字段；
-   - 背包满且有 50 木材时，最前面插入 `mode=inventory` 的 `place_chest` 候选（`tx/ty` 是空格）；
    - 返回 `truncated / order / more`，明确“看到的不是世界全部”；
 3. `decision/context.py:build_context`：
    - 现场：默认**压缩**——地块合并成 `observation.tiles` 通行网格
@@ -121,18 +120,16 @@ flowchart LR
      实体列表只列非地块实体（NPC/对象/耕地/水源/门/家具…），每条只留非默认字段，
      上限 `max_notable_entities`（默认 24，按距离排序，`trimmed` 报告 dropped）；
    - `observation.entity_counts`：可锄地/需浇水/可收获/可装水的数量，替代逐格罗列；
-   - `observation.inventory_state`：`free_slots / full / wood / place_chest_tiles`，
-     满包时模型不用自己数背包；
+   - `observation.inventory_state`：`free_slots / full / wood`，是事实字段，不替模型排优先级；
    - `abilities`：能力 id、版本、参数说明、观察需求、作用范围、完成判据（隐藏能力不出现）；
-   - `candidates`：只留 `id/ref/kind/tile/name`，背包满的放置候选额外保留 `op/tx/ty`；
-     前沿明细合并为 `considered/truncated`；
+   - `candidates`：只留 `id/ref/kind/tile/name`，前沿明细合并为 `considered/truncated`；
    - `experiences` / `last_result`（上一次委托的真实结果）/ `budget`；
    - `recent_actions`：最近 8 条动作（能力、参数摘要、状态、原因、多少秒前），最新在前；
    - `recent_failures`：其中 `failed` / `unknown` / `blocked` 的前 3 条，方便模型优先注意；
    - 刚重启时运行时历史为空，`make_decider` 会从 `store.recent_actions` 补读该存档最近的动作；
    - `instructions`：人类指令（见 §10 的收件箱）；
    - `long_term_goal` 与 `goal_revision`；
-   - `provided_knowledge`：项目主动提供的信息（能力目录、网格与计数含义、背包满的处置、
+   - `provided_knowledge`：项目主动提供的信息（能力目录、网格与计数含义、背包状态字段的含义、
      ref 时效、`blocked` 的含义、长期目标文字）。
 
 实测（真实农场快照 290 个实体、半径 8）：压缩前约 30.7k 字符（≈8.6k–10.6k tokens），
@@ -325,7 +322,9 @@ flowchart LR
 1. **经验库**：`make_event_sink`（`cli/wiring.py`）
    - `action_finished_*` → `store.record_action` 写成不可变证据；
    - 同一事件 → `experience.learning.learn_action`：
-     - 只学 `completed` / `failed`；按“地点 + 能力 + 任务”合并证据；
+     - 只学 `completed` / `failed`；按“地点 + 能力 + 关键参数”合并证据；
+     - 动作带结构化错误码（如 `INVENTORY_FULL`）或 `free_slots_before=0` 时，
+       经验主张会带“背包满时”，前提写 `player.freeSlots == 0`；
      - 同存档 3 次可区分成功 → `verified`；已验证经验遇到反例 → 退回 `candidate`；
      - `farm_routine` 的重复成功生成候选技能；取消该例行程序会作为停止测试证据参与晋级；
    - 能力 id 以 `skill:` 开头时，记录 `record_skill_run`：
@@ -338,6 +337,8 @@ flowchart LR
 
 经验检索在下一轮 `store.recall` 生效：存档经验按 `save_key` 隔离，已验证的机制经验可跨存档，
 但仍要检查前提。移动/单步交互不写经验（由能力与寻路保证）。
+召回 query 由 `cli/wiring.recall_query` 生成：地点 + 目标 + 当前状态词（如“背包满”），
+带状态前提的经验才有机会被检索到。
 
 ### 人类指令（收件箱）
 

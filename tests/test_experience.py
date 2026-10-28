@@ -453,3 +453,50 @@ def test_取消测试通过后派生技能晋级(tmp_path: Path):
     finally:
         store.close()
 
+
+
+def test_满包失败经验带_背包满_触发词与前提(store, tmp_path: Path):
+    from stardew_agent.experience import learn_action
+
+    result = learn_action(
+        store,
+        event_id="ev:full-1",
+        save_key=SAVE_A,
+        location="Farm",
+        ability="craft_item",
+        state="failed",
+        params={"item": "箱子"},
+        error="INVENTORY_FULL",
+        free_slots_before=0,
+    )
+
+    assert result["learned"] is True
+    assert result["full"] is True
+    assert result["claim"].startswith("背包满时")
+    row = store.list_experiences(save_key=SAVE_A)[0]
+    assert {"path": "player.freeSlots", "op": "==", "value": 0} in row["premises"]
+
+
+def test_满包时的可复用动作三次成功才验证(tmp_path: Path):
+    from stardew_agent.experience import learn_action
+
+    store = ExperienceStore(tmp_path / "full.sqlite3", clock=lambda: 1000.0)
+    try:
+        for index in range(3):
+            learn_action(
+                store,
+                event_id="ev:chest-%d" % index,
+                save_key=SAVE_A,
+                location="Farm",
+                ability="inventory_action",
+                state="completed",
+                params={"op": "place_chest"},
+                free_slots_before=0,
+            )
+        row = store.list_experiences(save_key=SAVE_A)[0]
+        assert row["status"] == "verified"
+        assert row["claim"].startswith("背包满时")
+        assert "place_chest" in row["claim"]
+    finally:
+        store.close()
+

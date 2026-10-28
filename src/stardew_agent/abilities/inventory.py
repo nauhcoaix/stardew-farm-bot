@@ -82,7 +82,11 @@ class CraftDelegation(DelegationBase):
                 return self.finish("unknown", "制作请求失败：%s（先重新观察背包）" % exc)
             self.record("response", dict(response))
             if response.get("ok") is False:
-                return self.finish("failed", "制作被拒绝：%s" % (response.get("reason") or "未知原因"))
+                return self.finish(
+                    "failed",
+                    "制作被拒绝：%s" % (response.get("reason") or "未知原因"),
+                    error=str(response.get("code") or "") or None,
+                )
             return Progress("running", "已请求制作 %s ×%d" % (self.item, self.qty), dict(self.evidence))
         self.steps += 1
         after = _name_count(observation, self.item)
@@ -140,7 +144,11 @@ class InventoryActionDelegation(DelegationBase):
                 return self.finish("unknown", "%s 请求失败：%s（先重新观察背包）" % (self.op, exc))
             self.record("response", dict(response))
             if response.get("ok") is False:
-                return self.finish("failed", "%s 被拒绝：%s" % (self.op, response.get("reason") or "未知原因"))
+                return self.finish(
+                    "failed",
+                    "%s 被拒绝：%s" % (self.op, response.get("reason") or "未知原因"),
+                    error=str(response.get("code") or "") or None,
+                )
             return Progress("running", "已请求 %s，等待观察背包" % self.op, dict(self.evidence))
 
         self.steps += 1
@@ -175,7 +183,7 @@ def craft_item_ability(port: InventoryPort, *, clock: Callable[[], float] = time
     descriptor = AbilityDescriptor(
         id="craft_item",
         version="1.0.0",
-        summary="按配方制作物品（例如 箱子、洒水器），材料由游戏扣除",
+        summary="按配方制作物品（产物需要背包空位或可叠加余量，材料由游戏扣除）",
         params={
             "item": "配方/产物名称（模糊匹配，例如 箱子）",
             "qty": "制作数量（1～10，默认 1）",
@@ -183,7 +191,7 @@ def craft_item_ability(port: InventoryPort, *, clock: Callable[[], float] = time
         observation_needs=("inventory", "menu"),
         scope="只调用游戏制作接口；不学习配方、不切换工具、不买材料",
         completion="背包里该物品数量增加；看不到变化时报告 unknown",
-        limits=("qty<=10",),
+        limits=("qty<=10", "背包满时拒绝（INVENTORY_FULL）"),
     )
 
     def validate(params: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -220,7 +228,7 @@ def inventory_action_ability(port: InventoryPort, *, clock: Callable[[], float] 
         version="1.0.0",
         summary="箱子取放、把物品放进发货箱、在空地上放箱子",
         params={
-            "op": "chest_put / chest_get / ship / place_chest",
+            "op": "chest_put / chest_get / ship / place_chest（place_chest 直接消耗 50 木材并放置箱子，不需要空背包格）",
             "tx": "目标容器所在格 x（chest_* 与 place_chest 必填）",
             "ty": "目标容器所在格 y",
             "slot": "背包槽位（chest_put 与 ship 必填）",
@@ -229,7 +237,10 @@ def inventory_action_ability(port: InventoryPort, *, clock: Callable[[], float] 
         observation_needs=("inventory", "entities", "menu"),
         scope="只操作指定格子/槽位；不移动、不买、不卖；一次只做一个动作",
         completion="背包槽位减少（put/ship）或背包物品增加（get/place 消耗木材）；否则 unknown",
-        limits=("一次委托只执行一个容器动作",),
+        limits=(
+            "一次委托只执行一个容器动作",
+            "place_chest 只能放在人物 1～2 格内的空格，且消耗 50 木材",
+        ),
     )
 
     def validate(params: Mapping[str, Any]) -> Mapping[str, Any]:

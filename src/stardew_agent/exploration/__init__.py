@@ -11,7 +11,6 @@ from .candidates import (
     candidates,
     frontier_candidates,
     interaction_candidates,
-    placement_candidates,
     visited_cells,
 )
 from .grid import Cell, build_grid, tile_key, unknown_neighbors
@@ -27,7 +26,6 @@ __all__ = [
     "interaction_candidates",
     "manhattan",
     "path_to",
-    "placement_candidates",
     "reachable",
     "region_route",
     "tile_key",

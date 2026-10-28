@@ -49,46 +49,6 @@ def _frontier_points(
     return points
 
 
-def placement_candidates(
-    entities: Iterable[Mapping[str, Any]],
-    player: Mapping[str, Any] | None,
-    *,
-    limit: int = 3,
-) -> list[dict]:
-    """背包满时可放箱子的相邻空格（1～2 格内、无对象/地形/动作/水源）。"""
-    here = dict(player or {}).get("position") or {}
-    ox, oy = here.get("x"), here.get("y")
-    if not isinstance(ox, int) or not isinstance(oy, int):
-        return []
-    rows: list[dict] = []
-    for entity in entities:
-        if entity.get("kind") != "tile" or entity.get("passable") is not True:
-            continue
-        if entity.get("refillable") or entity.get("objName") or entity.get("terrain") or entity.get("action"):
-            continue
-        tile = entity.get("tile") or {}
-        x, y = tile.get("x"), tile.get("y")
-        if not isinstance(x, int) or not isinstance(y, int):
-            continue
-        distance = abs(x - ox) + abs(y - oy)
-        if not 1 <= distance <= 2:
-            continue
-        rows.append(
-            {
-                "id": "placement:%d:%d" % (x, y),
-                "mode": "inventory",
-                "op": "place_chest",
-                "tx": x,
-                "ty": y,
-                "tile": {"x": x, "y": y},
-                "name": "可放箱子的空格",
-                "distance": distance,
-            }
-        )
-    rows.sort(key=lambda row: (row["distance"], row["ty"], row["tx"]))
-    return rows[:limit]
-
-
 def frontier_candidates(
     cells: Mapping[Cell, bool],
     start: Cell,

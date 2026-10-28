@@ -73,17 +73,20 @@ def _param_tag(ability: str, params: Mapping[str, Any]) -> str:
     if ability == "farm_routine":
         task = str(params.get("task") or "").strip()
         return " task=" + task if task else ""
-    for key in ("action", "recipe", "item", "itemId"):
+    for key in ("op", "action", "recipe", "item", "itemId"):
         value = params.get(key)
         if value not in (None, ""):
             return " %s=%s" % (key, str(value)[:24])
     return ""
 
 
-def claim_for(*, location: str, ability: str, params: Mapping[str, Any], state: str) -> str:
+def claim_for(
+    *, location: str, ability: str, params: Mapping[str, Any], state: str, full: bool = False
+) -> str:
     """生成可读、可去重的主张文字（不塞坐标，否则每条经验都只能用一次）。"""
     verb = {"completed": "能完成", "failed": "会失败"}.get(state, "结果未知")
-    return "%s：%s%s %s" % (location or "未知地点", ability, _param_tag(ability, params), verb)
+    prefix = "背包满时 " if full else ""
+    return "%s%s：%s%s %s" % (prefix, location or "未知地点", ability, _param_tag(ability, params), verb)
 
 
 def learn_action(
@@ -95,6 +98,8 @@ def learn_action(
     ability: str,
     state: str,
     params: Mapping[str, Any] | None = None,
+    error: str | None = None,
+    free_slots_before: int | None = None,
     ability_versions: Mapping[str, str] | None = None,
 ) -> dict:
     """把一次动作结果写入经验库；返回本次学习摘要（供日志/测试）。"""
@@ -106,9 +111,13 @@ def learn_action(
     if not save_key:
         return {"learned": False, "reason": "缺少 save_key，无法按存档隔离经验"}
 
-    claim = claim_for(location=location, ability=ability, params=params, state=state)
+    #: 背包满是一个可复现的前提：写入经验，下次同样满包时才能被召回。
+    full = error == "INVENTORY_FULL" or (
+        isinstance(free_slots_before, int) and free_slots_before <= 0
+    )
+    claim = claim_for(location=location, ability=ability, params=params, state=state, full=full)
     success = state == "completed"
-    if not success:
+    if not success and not full:
         #: 失败优先作为已有“能完成”经验的反例，而不是另建一条“会失败”的经验。
         success_claim = claim_for(location=location, ability=ability, params=params, state="completed")
         prior = store.experience_by_claim(success_claim, scope_save=save_key)
@@ -119,6 +128,8 @@ def learn_action(
 
     if existing is None:
         premises = [{"path": "location", "op": "==", "value": location}] if location else []
+        if full:
+            premises.append({"path": "player.freeSlots", "op": "==", "value": 0})
         record = store.add_experience(
             claim,
             kind="action",
@@ -171,6 +182,8 @@ def learn_action(
         "upgraded": upgraded,
         "demoted": demoted,
         "skill_id": skill_id,
+        "full": full,
+        "error": error,
     }
 
 

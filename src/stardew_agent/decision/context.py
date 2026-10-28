@@ -269,11 +269,8 @@ def _compact_candidates(candidates: Mapping[str, Any]) -> dict:
             "ref": row.get("ref"),
             "tile": row.get("tile"),
         }
-        for key in ("op", "tx", "ty", "name"):
-            if row.get(key) is not None:
-                item[key] = row.get(key)
         target = row.get("target") or {}
-        if isinstance(target, Mapping) and target.get("name") and "name" not in item:
+        if isinstance(target, Mapping) and target.get("name"):
             item["name"] = target.get("name")
         items.append({key: value for key, value in item.items() if value is not None})
     frontier = candidates.get("frontier") or {}
@@ -286,29 +283,6 @@ def _compact_candidates(candidates: Mapping[str, Any]) -> dict:
         if candidates.get(key):
             out[key] = candidates.get(key)
     return out
-
-
-def _placement_tiles(observation: Observation, limit: int = 3) -> list[dict]:
-    """背包满时给模型几个“可以放箱子”的相邻空格，省得它自己猜空地。"""
-    here = dict(observation.player or {}).get("position") or {}
-    ox, oy = here.get("x"), here.get("y")
-    if not isinstance(ox, int) or not isinstance(oy, int):
-        return []
-    rows: list[dict] = []
-    for entity in observation.entities:
-        if entity.get("kind") != "tile" or entity.get("passable") is not True:
-            continue
-        if entity.get("refillable") or entity.get("objName") or entity.get("terrain") or entity.get("action"):
-            continue
-        tile = entity.get("tile") or {}
-        x, y = tile.get("x"), tile.get("y")
-        if not isinstance(x, int) or not isinstance(y, int):
-            continue
-        distance = abs(x - ox) + abs(y - oy)
-        if 1 <= distance <= 2:
-            rows.append({"x": x, "y": y, "distance": distance})
-    rows.sort(key=lambda row: (row["distance"], row["y"], row["x"]))
-    return rows[:limit]
 
 
 def inventory_state(observation: Observation) -> dict:
@@ -332,7 +306,6 @@ def inventory_state(observation: Observation) -> dict:
         "free_slots": free,
         "full": (free == 0) if free is not None else None,
         "wood": wood,
-        "place_chest_tiles": _placement_tiles(observation),
     }
 
 
@@ -419,9 +392,8 @@ def build_context(
         "provided_knowledge": [
             "observation.tiles：可通行网格（origin 为左上角；. 可通行 / # 阻挡 / ? 未知 / 空格 未观察）；"
             "entity_counts 是可锄/需浇/可收/可装水/可播种（plantable）/种子数量（seeds）",
-            "inventory_state：free_slots=0/full=true 表示背包满；wood 是木材总数；"
-            "place_chest_tiles 是旁边可放箱子的空格（配合 inventory_action op=place_chest）；"
-            "满包时 craft_item 会被拒绝，不要指望产物掉地上",
+            "inventory_state：free_slots=0/full=true 表示背包已满；wood 是木材总数；"
+            "能力是否拒绝以 last_result.error/detail 为准",
             "ref 只在单次快照内有效；坐标与 target_id 跨快照稳定；判据 path 只能引用观察根字段",
             "recent_actions 的 state=blocked 表示执行器没下发，原样重发会被再次拦",
             "instructions 是用户直接给的指令/建议：优先级最高，但不能绕过能力参数与安全边界；"

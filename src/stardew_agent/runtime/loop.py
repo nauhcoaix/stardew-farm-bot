@@ -606,6 +606,7 @@ class AgentLoop:
             before_sampled_at=before.sampled_at if before else None,
             after_sampled_at=after.sampled_at,
             evidence=evidence,
+            error=str(evidence.get("error") or "") or None,
         )
         self._active = None
         self._pending_completion = None
@@ -617,7 +618,12 @@ class AgentLoop:
             "action_finished_" + state,
             ability=result.ability,
             status=state,
-            payload=dict(result.to_dict(), goal=self._active_goal, location=after.location),
+            payload=dict(
+                result.to_dict(),
+                goal=self._active_goal,
+                location=after.location,
+                free_slots_before=(self._active_before.player or {}).get("freeSlots") if self._active_before else None,
+            ),
         )
 
     def _count_result(self, state: str) -> None:

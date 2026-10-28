@@ -104,6 +104,19 @@
 - 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-inventory`）。
 
+## 本轮修改（2026-10-28，版本 0.1.9）
+
+- 去掉人为策略：移除“满包优先 place_chest/ship”的提示词与 placement 候选置顶；
+  背包满只作为事实（`free_slots/full/wood`）与结构化错误码出现；
+- 结构化错误码：`craft`/`shopbuy` 满包返回 `INVENTORY_FULL`，
+  `placechest` 返回 `NO_WOOD / TOO_FAR / WARP_TILE / FURNITURE / CHARACTER / OCCUPIED`；
+- 经验学习与召回：带 `INVENTORY_FULL` 或 `free_slots_before=0` 的动作写成
+  “背包满时 …”，前提 `player.freeSlots == 0`；召回 query 带“背包满”状态词；
+- 能力描述补充机制（不是策略）：`craft_item` 产物需要空位；`place_chest` 直接消耗 50 木材、
+  不需要空背包格；
+- 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-learning`）。
+
 ## 构建
 
 ```powershell

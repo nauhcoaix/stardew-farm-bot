@@ -48,7 +48,7 @@ from ..fishing_client import read_status, send as fish_send
 from ..model_client import ChatClient, default_config_paths, load_settings
 from ..observation import from_snapshot, observed_tiles, position_of
 from ..exploration import candidates as explore_candidates
-from ..exploration import placement_candidates, visited_cells
+from ..exploration import visited_cells
 from ..repeat_guard import RepeatGuard, RepeatPolicy
 from ..runtime import (
     ActionOwnership,
@@ -193,6 +193,8 @@ def make_event_sink(
                 ability=str(result.ability),
                 state=result.state,
                 params=result.params,
+                error=result.error,
+                free_slots_before=payload.get("free_slots_before"),
                 ability_versions=ability_versions,
             )
             if learned.get("learned"):
@@ -269,16 +271,14 @@ def build_candidates(observation: Observation, store: ExperienceStore, *, limit:
         scope=observation.scope,
         limit=limit,
     )
-    inventory = inventory_state(observation)
-    if inventory.get("full") and int(inventory.get("wood") or 0) >= 50:
-        spots = placement_candidates(observation.entities, observation.player, limit=3)
-        if spots:
-            #: 背包满且有 50 木材：把“可放箱子的空格”放到候选最前面，模型不用自己找空地。
-            result["items"] = spots + list(result.get("items") or [])
-            result["order"] = "背包已满：优先 placement 候选（inventory_action op=place_chest）；" + str(
-                result.get("order") or ""
-            )
     return result
+
+
+def recall_query(observation: Observation, goal: str) -> str:
+    """召回用查询：地点 + 目标 + 当前状态标签（背包满），让带前提的经验能被检索到。"""
+    state = inventory_state(observation)
+    tag = " 背包满" if state.get("full") else ""
+    return "%s %s%s" % (observation.location or "", goal, tag)
 
 
 def make_decider(
@@ -327,7 +327,7 @@ def make_decider(
         if not recent and observation.save_key:
             # 重启后内存历史为空：从证据库补读，让模型仍能看到之前的失败。
             recent = store.recent_actions(observation.save_key, limit=limits.max_recent_actions)
-        query = "%s %s" % (observation.location or "", state.get("goal") or config.long_term_goal)
+        query = recall_query(observation, str(state.get("goal") or config.long_term_goal))
         experiences = store.recall(query, save_key=observation.save_key, limit=8)
         context = build_context(
             observation=observation,

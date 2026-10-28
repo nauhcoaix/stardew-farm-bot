@@ -484,3 +484,15 @@ def test_例行程序剩余目标会自动续跑而不请求模型():
     kinds = [event.kind for event in harness.recorder.events]
     assert kinds.count("action_continued") == 2
 
+
+
+def test_证据里的错误码写入动作结果():
+    harness = Harness(
+        [decision_payload()],
+        requests=4,
+        progresses=[Progress("failed", "背包满了", {"error": "INVENTORY_FULL"})],
+    )
+    asyncio.run(harness.run(max_actions=1))
+    assert harness.loop._last_result is not None
+    assert harness.loop._last_result.error == "INVENTORY_FULL"
+

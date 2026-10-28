@@ -143,7 +143,7 @@ public static class MenuDump
         var item = shop.forSale[index];
         int price = item.salePrice();
         if (Game1.player.Money < price * qty)
-            return new { kind = "shopbuy", ok = false, reason = "钱不够", need = price * qty, money = Game1.player.Money };
+            return new { kind = "shopbuy", ok = false, code = "NOT_ENOUGH_MONEY", reason = "钱不够", need = price * qty, money = Game1.player.Money };
         int added = 0;
         for (int i = 0; i < qty; i++)
         {
@@ -153,7 +153,7 @@ public static class MenuDump
             added++;
         }
         if (added == 0)
-            return new { kind = "shopbuy", ok = false, reason = "背包满了：先 place_chest/ship 清空间再买" };
+            return new { kind = "shopbuy", ok = false, code = "INVENTORY_FULL", reason = "背包满了：商品无法放进背包" };
         int cost = price * added;
         Game1.player.Money -= cost;
         shop.heldItem = null;
@@ -175,20 +175,20 @@ public static class MenuDump
         int woodCount = 0;
         foreach (var wi in Game1.player.Items) if (wi != null && wi.QualifiedItemId == woodId) woodCount += wi.Stack;
         if (woodCount < 50)
-            return new { kind = "placechest", ok = false, reason = "木材不够 50" };
+            return new { kind = "placechest", ok = false, code = "NO_WOOD", reason = "木材不够 50" };
         var loc = Game1.currentLocation;
         var tile = new Microsoft.Xna.Framework.Vector2(tx, ty);
         int distance = System.Math.Abs(Game1.player.TilePoint.X - tx) + System.Math.Abs(Game1.player.TilePoint.Y - ty);
         if (distance < 1 || distance > 2)
-            return new { kind = "placechest", ok = false, reason = "要站在空格 1～2 格内再放箱子" };
+            return new { kind = "placechest", ok = false, code = "TOO_FAR", reason = "要站在空格 1～2 格内再放箱子" };
         if (Pathfinder.IsWarp(loc, new Microsoft.Xna.Framework.Point(tx, ty)))
-            return new { kind = "placechest", ok = false, reason = "出口/门格不能放箱子" };
+            return new { kind = "placechest", ok = false, code = "WARP_TILE", reason = "出口/门格不能放箱子" };
         if (loc.furniture.Any(f => f.TileLocation.ToPoint() == new Microsoft.Xna.Framework.Point(tx, ty)))
-            return new { kind = "placechest", ok = false, reason = "那格有家具" };
+            return new { kind = "placechest", ok = false, code = "FURNITURE", reason = "那格有家具" };
         if (loc.characters.Any(c => c.TilePoint.X == tx && c.TilePoint.Y == ty))
-            return new { kind = "placechest", ok = false, reason = "那格站着人" };
+            return new { kind = "placechest", ok = false, code = "CHARACTER", reason = "那格站着人" };
         if (loc.objects.ContainsKey(tile))
-            return new { kind = "placechest", ok = false, reason = "那格已经有东西" };
+            return new { kind = "placechest", ok = false, code = "OCCUPIED", reason = "那格已经有东西" };
         int need = 50;
         for (int i = 0; i < Game1.player.Items.Count && need > 0; i++)
         {
@@ -200,10 +200,10 @@ public static class MenuDump
         }
         var item = ItemRegistry.Create("(BC)130");
         if (item is not StardewValley.Object obj)
-            return new { kind = "placechest", ok = false, reason = "造不出箱子" };
+            return new { kind = "placechest", ok = false, code = "CREATE_FAILED", reason = "造不出箱子" };
         bool placed = obj.placementAction(loc, tx * 64, ty * 64, Game1.player);
         if (!placed)
-            return new { kind = "placechest", ok = false, reason = "放不下去" };
+            return new { kind = "placechest", ok = false, code = "PLACE_FAILED", reason = "放不下去" };
         return new { kind = "placechest", ok = true, x = tx, y = ty, woodLeft = woodCount - 50 };
     }
 

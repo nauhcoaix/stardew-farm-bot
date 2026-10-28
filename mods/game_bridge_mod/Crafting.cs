@@ -155,8 +155,9 @@ namespace AgentStardew
                     {
                         kind = "craft",
                         ok = crafted > 0,
+                        code = "INVENTORY_FULL",
                         crafted,
-                        reason = "背包满了：先 inventory_action op=place_chest 放箱子或 ship，把东西放进去再制作",
+                        reason = "背包满了：产物无法放进背包",
                     };
                 foreach (var (id, n) in need) Remove(inv, id, n);
                 if (!player.addItemToInventoryBool(item))
