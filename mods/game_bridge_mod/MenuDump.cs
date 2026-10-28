@@ -102,6 +102,7 @@ public static class MenuDump
         var menu = Game1.activeClickableMenu;
         if (menu == null) return new { kind = "menuclick", clicked = false, reason = "没有打开的菜单" };
         menu.receiveLeftClick(x, y, true);
+        PlayerRecovery.TryRecover();
         return new { kind = "menuclick", clicked = true, x, y, type = menu.GetType().Name };
     }
 
@@ -111,6 +112,7 @@ public static class MenuDump
         if (menu == null) return new { kind = "menuclose", closed = false };
         var type = menu.GetType().Name;
         menu.exitThisMenu(true);
+        PlayerRecovery.TryRecover();
         return new { kind = "menuclose", closed = true, type };
     }
 

@@ -23,7 +23,12 @@ public sealed class ModEntry : Mod
         helper.Events.GameLoop.UpdateTicked += (_, _) =>
         {
             background.AfterUpdate();
-            if (Context.IsWorldReady) observations.RecordPosition();
+            if (Context.IsWorldReady)
+            {
+                // 菜单/交互结束后游戏偶尔不把 CanMove 复位；没有合法阻塞时立刻恢复。
+                PlayerRecovery.TryRecover();
+                observations.RecordPosition();
+            }
         };
         helper.Events.GameLoop.SaveLoaded += (_, _) => Reset();
         helper.Events.GameLoop.ReturnedToTitle += (_, _) => Reset();

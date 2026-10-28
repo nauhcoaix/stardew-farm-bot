@@ -48,9 +48,21 @@ def snapshot(
     energy: int = 200,
     selected_slot: int = 0,
     can_move: bool = True,
+    can_move_lock: str | None = None,
     money: int = 500,
 ) -> dict:
     entities = list(entities or [])
+    player = {
+        "position": tile(x, y),
+        "energy": energy,
+        "maxEnergy": 270,
+        "selectedSlot": selected_slot,
+        "canMove": can_move,
+        "money": money,
+        "maxItems": 12,
+    }
+    if can_move_lock is not None:
+        player["canMoveLock"] = can_move_lock
     scope = {
         "radius": radius,
         "center": tile(x, y),
@@ -70,15 +82,7 @@ def snapshot(
         "location": location,
         "date": {"season": season, "day": day, "year": year},
         "time": game_time,
-        "player": {
-            "position": tile(x, y),
-            "energy": energy,
-            "maxEnergy": 270,
-            "selectedSlot": selected_slot,
-            "canMove": can_move,
-            "money": money,
-            "maxItems": 12,
-        },
+        "player": player,
         "inventory": list(inventory_rows or []),
         "trajectory": [],
         "observation": scope,

@@ -211,6 +211,15 @@ def test_坐标落在出口格也会等切图():
     assert run_step(delegation, outside).state == "completed"
 
 
+def test_移动前提会说明_canMove_锁定原因():
+    spec = move_ability(FakeMovePort())
+    params = spec.validate({"x": 1, "y": 2})
+    checks = spec.check_premises(params, observe(can_move=False, can_move_lock="menu"))
+    detail = [check.detail for check in checks if check.kind == "game"][0]
+    assert "player.canMove=False" in detail
+    assert "menu" in detail
+
+
 def test_菜单打开或不能移动时前提明确失败():
     spec = move_ability(FakeMovePort())
     params = spec.validate({"x": 1, "y": 2})

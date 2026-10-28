@@ -81,6 +81,7 @@ public sealed class Observations
     private static string? MapAction(GameLocation location, Point p) => location.doesTileHaveProperty(p.X, p.Y, "Action", "Buildings") ?? location.doesTileHaveProperty(p.X, p.Y, "TouchAction", "Back");
     public object Snapshot(int radius = 8)
     {
+        PlayerRecovery.TryRecover();
         RecordPosition();
         var location = Game1.currentLocation;
         var center = Position;
@@ -169,10 +170,21 @@ public sealed class Observations
             if (v.item is WateringCan can) { entry["water"] = can.WaterLeft; entry["waterCapacity"] = can.waterCanMax; }
             return entry;
         }).ToArray();
+        var playerView = new Dictionary<string, object?>
+        {
+            ["position"] = Tile(center),
+            ["energy"] = Game1.player.Stamina,
+            ["maxEnergy"] = Game1.player.MaxStamina,
+            ["selectedSlot"] = Game1.player.CurrentToolIndex,
+            ["canMove"] = Game1.player.CanMove,
+            ["money"] = Game1.player.Money,
+            ["maxItems"] = Game1.player.MaxItems,
+        };
+        if (PlayerRecovery.LockReason() is { } lockReason) playerView["canMoveLock"] = lockReason;
         return new { mode = "game", kind = "snapshot", snapshotId = id, instanceId = InstanceId, saveGeneration = Generation,
             saveId = Game1.uniqueIDForThisGame.ToString(), playerId = Game1.player.UniqueMultiplayerID.ToString(), location = location.NameOrUniqueName,
             date = new { season = Game1.currentSeason, day = Game1.dayOfMonth, year = Game1.year }, time = Game1.timeOfDay,
-            player = new { position = Tile(center), energy = Game1.player.Stamina, maxEnergy = Game1.player.MaxStamina, selectedSlot = Game1.player.CurrentToolIndex, canMove = Game1.player.CanMove, money = Game1.player.Money, maxItems = Game1.player.MaxItems },
+            player = playerView,
             inventory, trajectory = positions.ToArray(), observation = new { radius, center = Tile(center), truncated = center.X - radius > 0 || center.Y - radius > 0 || center.X + radius < width - 1 || center.Y + radius < height - 1, width, height }, entities, menu };
     }
     public object Result(string detail, bool changed = true) => new { kind = "action", location = Game1.currentLocation.NameOrUniqueName, position = Tile(Position), changed, detail, snapshot = Snapshot() };

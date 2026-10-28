@@ -71,6 +71,7 @@ cli.run_agent
 | 经验状态不会被相似度或模型自信提升 | `experience/store.py`（显式状态变更 + 晋级判据；`status=verified` 必须带证据） |
 | 经验只由真实执行写入/升级 | `experience/learning.py`：只学 completed/failed，3 次可区分成功才 verified，反例退回 candidate |
 | 人类指令不能绕过校验 | 指令只是上下文数据；能力参数、前提、限频、所有权仍照常检查 |
+| 交互后 CanMove 卡死会自愈 | `PlayerRecovery`：无菜单/事件/切图/动画等明确阻塞时，连续 2 帧后 `forceCanMove` |
 | 存档事实不跨存档 | 所有索引表带 `save_key`；`scope='save'` 的经验必须带存档 |
 | 换存档不继承动作历史 | `loop._note_context`：清空 `recent_actions`/`last_result` 并记 `context_switched`；`make_decider` 归零短期目标 |
 | 一次逻辑委托只有一个动作 ID | 能力把 `delegation.action_id` 传给 `actionId`（`navigation`/`interaction`），桥按连接串行 |

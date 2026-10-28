@@ -81,6 +81,19 @@
 - 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-clamp`）。
 
+## 本轮修改（2026-10-28，版本 0.1.7）
+
+- 修“退出交互/菜单后 `CanMove` 一直是 false”：菜单关闭、直接 `checkAction`、取消工具动画等情况下，
+  游戏偶尔不会把 `Farmer.CanMove` 复位，导致之后所有写动作都被 `BUSY` 拦下。
+  - 新增 `PlayerRecovery`：只有 **没有菜单/事件/切图/新一天/小游戏/工具动画/进食/睡觉** 这些
+    明确阻塞时，连续 2 帧仍为 false 才调用 `forceCanMove`（反射，缺失时退回赋值）并置 true；
+  - 挂接点：`UpdateTicked`（每帧兜底）、`Snapshot`（保证观察值一致）、
+    `GameActions.Create`（动作下发前自愈）、`MenuDump.Click/Close`（菜单刚关就恢复）；
+  - 观察里的 `player` 增加 `canMoveLock`（仅锁定时出现）：`menu / event / fade / new-day /
+    minigame / tool / eating / in-bed / stale`，Python 前提提示会带上原因。
+- 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-canmove`）。
+
 ## 构建
 
 ```powershell

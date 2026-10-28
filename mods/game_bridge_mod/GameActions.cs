@@ -21,6 +21,7 @@ public static class GameActions
     public static IGameAction Create(Request request, Observations observations, IReflectionHelper reflection)
     {
         if (request.Command == "menu") return new MenuAction(observations, observations.Resolve(Protocol.Text(request.Args, "target"), true));
+        PlayerRecovery.TryRecover();
         if (!Game1.player.CanMove || Game1.player.UsingTool || Game1.activeClickableMenu != null || Game1.eventUp || Game1.fadeToBlack)
             throw new ActionFault("BUSY", "角色处于动画、菜单或场景过渡中，请先观察。");
         switch (request.Command)

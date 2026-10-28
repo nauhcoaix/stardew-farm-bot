@@ -217,11 +217,15 @@ def move_ability(port: MovePort, *, clock: Callable[[], float] = time.monotonic)
 
     def premises(params: Mapping[str, Any], observation: Observation) -> list[PremiseCheck]:
         can_move = observation.field("player.canMove")
+        lock = observation.field("player.canMoveLock")
+        detail = "player.canMove=%s" % can_move.value
+        if lock.known and lock.value:
+            detail += "（锁：%s）" % lock.value
         checks = [
             PremiseCheck(
                 "game",
                 bool(can_move.value) if can_move.known else None,
-                "player.canMove=%s" % can_move.value,
+                detail,
             ),
             PremiseCheck(
                 "game",

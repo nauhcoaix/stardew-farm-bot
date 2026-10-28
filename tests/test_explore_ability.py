@@ -79,3 +79,14 @@ def test_探索前提要求能移动且没有菜单():
 
     checks = spec.check_premises(params, observe(menu=menu_row(["@s1:m1"])))
     assert any(check.met is False for check in checks)
+
+
+def test_探索前提说明_canMove_锁定原因():
+    spec = explore_ability(FakeMovePort(), _candidates([(11, 10)]))
+    checks = spec.check_premises(
+        spec.validate({"max_steps": 2}), observe(can_move=False, can_move_lock="menu")
+    )
+    detail = [check.detail for check in checks if check.kind == "game"][0]
+    assert "player.canMove=False" in detail
+    assert "menu" in detail
+
