@@ -78,15 +78,22 @@
 
 ## model_client（白名单 5）
 
-- `ModelSettings(api_key, api_base, model, timeout_seconds, temperature, max_tokens)`；
-  `public()` 不含密钥。
-- `pick_api_key(config)`、`settings_from_config(config)`、`load_settings(paths,
-  required=False)`、`default_config_paths()`。
+- 任意 OpenAI 兼容 `/chat/completions`：DeepSeek、OpenAI、OpenRouter、Ollama/LM Studio、
+  vLLM、Azure 等。`ModelSettings(api_key="", api_base, model, timeout_seconds, temperature,
+  max_tokens, max_tokens_param, json_mode, auth, api_key_header, headers, extra_body)`；
+  `public()` 不含密钥与额外头取值（只列头名）。
+- 地址归一：`normalize_api_base(url)` 把 `https://host/v1` 补成 `…/v1/chat/completions`，
+  已是完整端点（含 `chat/completions`，例如 Azure 带 `api-version`）原样保留。
+- 密钥：`pick_api_key` 接受任意非占位符字符串（不要求 `sk-` 前缀）；远程端点缺 key 报
+  `ConfigError`，本地端点（localhost/127.0.0.1/`auth="none"`/`allow_missing_key`）可以不带。
+- `settings_from_config` / `settings_from_env`（`OPENAI_API_KEY`、`OPENAI_BASE_URL`、
+  `OPENAI_MODEL`）/ `load_settings(paths, required=False)` / `default_config_paths()`。
 - `extract_json(text)`、`ChatClient(settings, *, transport, clock).complete(messages,
-  *, timeout, json_object, temperature, max_tokens) -> ModelReply`。
+  *, timeout, json_object, temperature, max_tokens) -> ModelReply`。请求按 `auth` 发送
+  `Authorization: Bearer`、自定义头或不发认证；`extra_body` 最后合并；`content` 为分段数组时拼接。
 - `ModelReply`：`content/parsed/model/served_model/prompt_tokens/completion_tokens/
   elapsed_seconds/total_tokens/usage()`。
-- 不包含提示词、计划结构或后台生命周期；密钥不进入异常文本。
+- 不包含提示词、计划结构或后台生命周期；密钥不进入异常文本，HTTP 错误只带状态码与供应商原因。
 
 ## decision
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -14,8 +16,10 @@ from stardew_agent.model_client import (
     ModelSettings,
     extract_json,
     load_settings,
+    normalize_api_base,
     pick_api_key,
     settings_from_config,
+    settings_from_env,
 )
 
 GOOD = {"api_key": "sk-test-123", "model": "deepseek-chat", "api_base": "https://example.invalid/chat"}
@@ -102,3 +106,113 @@ def test_回复结构不符合聊天接口时报错():
     client = ChatClient(ModelSettings(api_key="sk-test-123"), transport=transport)
     with pytest.raises(ModelError):
         asyncio.run(client.complete([{"role": "user", "content": "hi"}]))
+
+def test_base_url会被补齐为聊天补全端点():
+    assert normalize_api_base("https://api.openai.com/v1") == "https://api.openai.com/v1/chat/completions"
+    assert normalize_api_base("https://api.deepseek.com/chat/completions") == (
+        "https://api.deepseek.com/chat/completions"
+    )
+    azure = "https://x.openai.azure.com/openai/deployments/d/chat/completions?api-version=2024-02-15-preview"
+    assert normalize_api_base(azure) == azure
+    assert normalize_api_base("") == "https://api.deepseek.com/chat/completions"
+
+
+def test_本地端点可以不带密钥_远程端点必须带():
+    settings = settings_from_config({"base_url": "http://localhost:1234/v1", "model": "qwen2.5"})
+    assert settings.api_key == ""
+    assert settings.api_base == "http://localhost:1234/v1/chat/completions"
+
+    with pytest.raises(ConfigError):
+        settings_from_config({"base_url": "https://api.example.com/v1", "model": "x"})
+
+
+def test_自定义鉴权头与额外请求字段():
+    settings = settings_from_config(
+        {
+            "api_key": "azure-key",
+            "api_base": "https://x.openai.azure.com/openai/deployments/d/chat/completions?api-version=2024-02-15",
+            "auth": "header",
+            "api_key_header": "api-key",
+            "headers": {"X-Title": "stardew"},
+            "extra_body": {"top_p": 0.9},
+            "json_mode": False,
+            "max_tokens_param": "max_completion_tokens",
+        }
+    )
+    captured = {}
+
+    def transport(url, body, headers, timeout):
+        captured.update({"url": url, "body": json.loads(body), "headers": dict(headers)})
+        return {"choices": [{"message": {"content": '{"goal":"x"}'}}]}
+
+    reply = asyncio.run(
+        ChatClient(settings, transport=transport).complete([{"role": "user", "content": "hi"}])
+    )
+    assert reply.parsed == {"goal": "x"}
+    assert captured["headers"]["api-key"] == "azure-key"
+    assert "Authorization" not in captured["headers"]
+    assert captured["headers"]["X-Title"] == "stardew"
+    assert captured["body"]["max_completion_tokens"] == 1600
+    assert captured["body"]["top_p"] == 0.9
+    assert "response_format" not in captured["body"]
+
+    public = json.dumps(settings.public(), ensure_ascii=False)
+    assert "azure-key" not in public
+    assert "stardew" not in public
+
+
+def test_回复内容为分段数组时会拼接():
+    def transport(url, body, headers, timeout):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": '{"goal":'},
+                            {"type": "text", "text": '"分段"}'},
+                        ]
+                    }
+                }
+            ]
+        }
+
+    client = ChatClient(ModelSettings(api_key="sk-test"), transport=transport)
+    reply = asyncio.run(client.complete([{"role": "user", "content": "hi"}]))
+    assert reply.parsed == {"goal": "分段"}
+
+
+def test_HTTP错误会带上供应商原因():
+    def transport(url, body, headers, timeout):
+        raise urllib.error.HTTPError(
+            "https://example.invalid/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error":{"message":"response_format unsupported"}}'),
+        )
+
+    client = ChatClient(ModelSettings(api_key="sk-test"), transport=transport)
+    with pytest.raises(ModelError) as excinfo:
+        asyncio.run(client.complete([{"role": "user", "content": "hi"}]))
+    text = str(excinfo.value)
+    assert "400" in text
+    assert "response_format unsupported" in text
+
+
+def test_环境变量可以配置任意兼容端点(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "qwen-plus")
+    settings = load_settings([], required=True)
+    assert settings is not None
+    assert settings.api_key == "env-key"
+    assert settings.api_base == "https://api.example.com/v1/chat/completions"
+    assert settings.model == "qwen-plus"
+
+    monkeypatch.delenv("OPENAI_API_KEY")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+    local = settings_from_env()
+    assert local is not None
+    assert local.auth == "none"
+    assert local.api_key == ""
+

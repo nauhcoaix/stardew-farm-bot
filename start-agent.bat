@@ -200,8 +200,10 @@ if exist "%ROOT%model.json" exit /b 0
 if exist "%ROOT%model.example.json" (
   copy /y "%ROOT%model.example.json" "%ROOT%model.json" >nul
 )
-echo [SETUP] model.json is missing: put your sk-... DeepSeek API key into it.
+echo [SETUP] model.json is missing: put an OpenAI-compatible API key into it.
 echo         A template was created and opened in Notepad.
+echo         Any OpenAI-compatible endpoint works: OpenAI, DeepSeek, OpenRouter,
+echo         Ollama/LM Studio, vLLM, Azure (see README "model access").
 echo         Save it, then run this script again.
 start "" notepad "%ROOT%model.json"
 exit /b 1

@@ -4,5 +4,8 @@
   "model": "deepseek-chat",
   "timeout_seconds": 60,
   "temperature": 0.2,
-  "max_tokens": 1600
+  "max_tokens": 1600,
+  "max_tokens_param": "max_tokens",
+  "json_mode": true,
+  "auth": "bearer"
 }

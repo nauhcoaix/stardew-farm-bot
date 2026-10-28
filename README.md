@@ -1,6 +1,6 @@
 # 星露谷学习型机器人（重构版）
 
-让模型（DeepSeek 兼容聊天接口）自主决定“做什么、用什么、去哪”，本地执行器只做有界、
+让模型（任意 OpenAI 兼容聊天接口：DeepSeek、OpenAI、OpenRouter、Ollama/LM Studio、vLLM 等）自主决定“做什么、用什么、去哪”，本地执行器只做有界、
 可取消的委托；系统记录真实结果，把经验与可验证的动作组合沉淀下来，重启后仍可复用。
 
 本项目按 `docs_origin/重构需求.md` 的基线重构自 `stardew_valley_dfy`，只复用交接文档
@@ -154,7 +154,7 @@ select_item 101 次：拦截 51.5%
 脚本行为：
 
 - 首次运行会从 `config.example.json` 生成 `config.json`（预算与限频按需修改）；
-- 缺少 `model.json` 时会生成模板并打开记事本，填入 `sk-` 开头的 DeepSeek Key 后重新运行；
+- 缺少 `model.json` 时会生成模板并打开记事本，填入任意 OpenAI 兼容服务的 Key 后重新运行；
 - 优先使用项目内 `.venv\Scripts\python.exe`，否则用 PATH 里的 `python`；
 - 无需 `pip install`：脚本把 `src` 加入 `PYTHONPATH`；
 - 控制台代码页设为 UTF-8，Python 的中文输出正常显示；脚本本身是纯 ASCII（cmd 无法可靠解析
@@ -172,7 +172,7 @@ python -m pytest
 
 # 配置（预算与限频必须显式填写，没有隐式默认值）
 Copy-Item config.example.json config.json
-Copy-Item model.example.json model.json   # 填入 sk- 开头的 DeepSeek API Key
+Copy-Item model.example.json model.json   # 填入任意 OpenAI 兼容服务的 Key 与端点
 
 # 只读自检：模型配置、游戏桥、钓鱼 Mod、向量模型与存储路径
 python -m stardew_agent doctor --config config.json
@@ -222,6 +222,42 @@ stardew-agent skills --config config.json retire --id skill:xxx --reason "前提
 - `model.json` 支持 `api_key` / `apiKey`，占位符（`your-key` 等）会被拒绝。
 
 密钥不会进入日志、状态文件或证据导出。
+
+## 模型接入（任意 OpenAI 兼容）
+
+`model.json` 只需要 `api_key`、`api_base`（或 `base_url`）与 `model`，任何 OpenAI 兼容的
+`/chat/completions` 端点都能用：
+
+| 服务 | `api_base` | 备注 |
+|---|---|---|
+| DeepSeek | `https://api.deepseek.com` | 默认示例 |
+| OpenAI | `https://api.openai.com/v1` | 自动补 `/chat/completions` |
+| OpenRouter | `https://openrouter.ai/api/v1` | 可加 `headers: {"HTTP-Referer": "...", "X-Title": "..."}` |
+| Ollama | `http://127.0.0.1:11434/v1` | 本地端点不需要 key |
+| LM Studio | `http://127.0.0.1:1234/v1` | 本地端点不需要 key |
+| vLLM / 自建 | `http://<host>:<port>/v1` | 需要时用 `auth` |
+| Azure OpenAI | `https://<res>.openai.azure.com/openai/deployments/<name>/chat/completions?api-version=...` | `auth: "header"` + `api_key_header: "api-key"` |
+
+可选字段：
+
+- `base_url`：与 `api_base` 等价，允许只写根地址（自动补 `/chat/completions`）；
+- `auth`：`bearer`（默认）/ `header` / `none`；本地端点没有 key 时自动不发送认证头；
+- `api_key_header`：`auth: "header"` 时的头名（Azure 用 `api-key`）；
+- `headers`：额外请求头（值不进日志/状态，`public()` 只列名字）；
+- `extra_body`：额外请求体字段（`top_p`、`seed`、`enable_thinking`…，最后合并，可覆盖默认值）；
+- `json_mode`：是否发送 `response_format={"type":"json_object"}`，默认 `true`；端点不支持就设 `false`；
+- `max_tokens_param`：生成上限字段名，默认 `max_tokens`；OpenAI 新推理模型用 `max_completion_tokens`。
+
+也可以完全用环境变量（不需要 `model.json`）：
+
+```powershell
+$env:OPENAI_API_KEY = "..."
+$env:OPENAI_BASE_URL = "http://127.0.0.1:11434/v1"
+$env:OPENAI_MODEL = "qwen2.5:14b"
+```
+
+`doctor` 只打印端点、模型名与请求头名字，不打印密钥；回复内容为分段数组、缺少 `usage`、
+HTTP 错误带供应商原因等常见兼容差异都已处理。
 
 ## 决策全过程文档
 

@@ -95,6 +95,39 @@ def _post_json(url: str, body: bytes, headers: Mapping[str, str], timeout: float
 Transport = Callable[[str, bytes, Mapping[str, str], float], dict]
 
 
+def _content_text(value: Any) -> str:
+    """兼容 ``content`` 是字符串或分段数组（部分网关返回 ``[{"type":"text","text":...}]``）。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        parts: list[str] = []
+        for part in value:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, Mapping):
+                text = part.get("text")
+                if text is not None and part.get("type") in (None, "text", "output_text"):
+                    parts.append(str(text))
+        return "".join(parts)
+    return "" if value is None else str(value)
+
+
+def _error_detail(exc: urllib.error.HTTPError) -> str:
+    """从供应商错误响应里取一句可读原因（不含请求头/密钥）。"""
+    try:
+        raw = exc.read().decode("utf-8", "replace")
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001 - 错误响应不是 JSON 时只报状态码
+        return ""
+    error = data.get("error") if isinstance(data, Mapping) else None
+    if isinstance(error, Mapping):
+        message = error.get("message") or error.get("detail")
+        return str(message or "")[:200]
+    if isinstance(error, str):
+        return error[:200]
+    return ""
+
+
 class ChatClient:
     """兼容聊天接口的最小客户端。传输可注入，便于离线测试。"""
 
@@ -119,18 +152,26 @@ class ChatClient:
         max_tokens: int | None = None,
     ) -> ModelReply:
         """发送一次请求并返回回复；网络与解析错误统一抛 ``ModelError``。"""
+        token_param = self.settings.max_tokens_param or "max_tokens"
+        token_limit = self.settings.max_tokens if max_tokens is None else int(max_tokens)
         body: dict[str, Any] = {
             "model": self.settings.model,
             "messages": [dict(message) for message in messages],
             "temperature": self.settings.temperature if temperature is None else float(temperature),
-            "max_tokens": self.settings.max_tokens if max_tokens is None else int(max_tokens),
+            token_param: token_limit,
         }
-        if json_object:
+        if json_object and self.settings.json_mode:
             body["response_format"] = {"type": "json_object"}
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + self.settings.api_key,
-        }
+        # 额外字段最后合并：不同供应商的 top_p/seed/enable_thinking 等都在这里透传。
+        for key, value in dict(self.settings.extra_body).items():
+            body[key] = value
+        headers = {"Content-Type": "application/json"}
+        if self.settings.api_key:
+            if self.settings.auth == "header":
+                headers[self.settings.api_key_header or "Authorization"] = self.settings.api_key
+            elif self.settings.auth == "bearer":
+                headers["Authorization"] = "Bearer " + self.settings.api_key
+        headers.update({str(name): str(value) for name, value in dict(self.settings.headers).items()})
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         started = self.clock()
         try:
@@ -142,17 +183,22 @@ class ChatClient:
                 float(self.settings.timeout_seconds if timeout is None else timeout),
             )
         except urllib.error.HTTPError as exc:
-            raise ModelError("模型请求失败：HTTP %s" % exc.code) from exc
+            detail = _error_detail(exc)
+            raise ModelError("模型请求失败：HTTP %s%s" % (exc.code, ("：" + detail) if detail else "")) from exc
         except Exception as exc:  # noqa: BLE001 - 不打印请求/响应全文，避免密钥与玩家文本进日志
             raise ModelError("模型请求失败：%s" % type(exc).__name__) from exc
         elapsed = self.clock() - started
         try:
-            content = response["choices"][0]["message"]["content"]
+            message = response["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ModelError("模型回复结构不符合聊天接口") from exc
+        content = _content_text(message.get("content") if isinstance(message, Mapping) else message)
+        if not content:
+            # 少数兼容实现把纯文本放在 choices[0].text
+            content = _content_text((response["choices"][0] or {}).get("text"))
         usage = response.get("usage") or {}
         return ModelReply(
-            content=str(content or ""),
+            content=content,
             parsed=extract_json(content),
             model=str(response.get("model") or self.settings.model),
             served_model=str(response.get("model") or ""),
