@@ -4,6 +4,7 @@
   "model_request_interval_seconds": 0,
   "model_completion_enabled": false,
   "expose_mechanics": false,
+  "care_first": true,
   "repeat_window_seconds": 8,
   "repeat_max_runs": 5,
   "repeat_exempt_abilities": ["select_item"],

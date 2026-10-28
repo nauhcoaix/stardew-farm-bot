@@ -127,13 +127,27 @@ def _passable_grid(observation: Observation) -> dict | None:
 
 
 def _entity_counts(observation: Observation) -> dict:
-    counts = {"diggable": 0, "needsWater": 0, "harvestable": 0, "refillable": 0, "notable": 0}
+    counts = {
+        "diggable": 0,
+        "needsWater": 0,
+        "harvestable": 0,
+        "refillable": 0,
+        "notable": 0,
+        "plantable": 0,
+        "seeds": 0,
+    }
     for entity in observation.entities:
         for key in ("diggable", "needsWater", "harvestable", "refillable"):
             if entity.get(key) is True:
                 counts[key] += 1
         if _is_notable(entity):
             counts["notable"] += 1
+        if entity.get("kind") == "soil" and entity.get("tilled") and not entity.get("crop"):
+            counts["plantable"] += 1
+    for item in observation.inventory:
+        text = " ".join(str(item.get(key) or "") for key in ("name", "itemId")).lower()
+        if "种子" in text or "seed" in text:
+            counts["seeds"] += int(item.get("count") or 0)
     return counts
 
 
@@ -333,7 +347,7 @@ def build_context(
         "budget": dict(budget or {}),
         "provided_knowledge": [
             "observation.tiles：可通行网格（origin 为左上角；. 可通行 / # 阻挡 / ? 未知 / 空格 未观察）；"
-            "entity_counts 是可锄/需浇/可收/可装水的数量",
+            "entity_counts 是可锄/需浇/可收/可装水/可播种（plantable）/种子数量（seeds）",
             "ref 只在单次快照内有效；坐标与 target_id 跨快照稳定；判据 path 只能引用观察根字段",
             "recent_actions 的 state=blocked 表示执行器没下发，原样重发会被再次拦",
         ],

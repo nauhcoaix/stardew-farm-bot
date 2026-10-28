@@ -61,6 +61,10 @@ TOOL_LABELS = {
 
 #: ``auto`` 只挑照料类任务：砍树/清障/挖矿是不可逆的资源决策，必须显式指定
 AUTO_ORDER = ("water", "till", "harvest", "refill")
+#: 破坏性任务（除草/砍树/挖矿）：有照料类农活时默认不做，且一次最多这么多目标
+DESTRUCTIVE_TASKS = ("chop", "clear", "mine")
+DESTRUCTIVE_DEFAULT_TARGETS = 6
+DESTRUCTIVE_MAX_TARGETS = 8
 #: 默认一批做多少个目标：批量越大，模型请求越少（token 消耗主要来自请求次数）
 DEFAULT_TARGETS = 16
 DEFAULT_SECONDS = 90
@@ -449,9 +453,15 @@ def _validate(params: Mapping[str, Any]) -> Mapping[str, Any]:
     task = str(params.get("task") or "auto")
     if task not in TASKS:
         raise Rejected("task 只能是 %s" % "/".join(TASKS))
+    default_targets = DESTRUCTIVE_DEFAULT_TARGETS if task in DESTRUCTIVE_TASKS else DEFAULT_TARGETS
     max_targets = require_int(
-        {"max_targets": params.get("max_targets", DEFAULT_TARGETS)}, "max_targets", low=1, high=40
+        {"max_targets": params.get("max_targets", default_targets)}, "max_targets", low=1, high=40
     )
+    if task in DESTRUCTIVE_TASKS and max_targets > DESTRUCTIVE_MAX_TARGETS:
+        raise Rejected(
+            "%s 一次最多 %d 个目标（做完再决定是否继续，避免一直除草/挖矿）"
+            % (task, DESTRUCTIVE_MAX_TARGETS)
+        )
     seconds = params.get("max_seconds", DEFAULT_SECONDS)
     if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
         raise Rejected("参数 max_seconds 必须是数字")
@@ -547,7 +557,34 @@ def _premises(params: Mapping[str, Any], observation: Observation) -> list[Premi
     return checks
 
 
-def farm_routine_ability(registry: Any, *, clock: Callable[[], float] = time.monotonic) -> AbilitySpec:
+def _care_first_checks(observation: Observation) -> list[PremiseCheck]:
+    """有作物要照料时，先把除草/砍树/挖矿按住（用户策略，可关闭）。"""
+    water = len(remaining_targets(observation, "water"))
+    harvest = len(remaining_targets(observation, "harvest"))
+    refill = len(remaining_targets(observation, "refill"))
+    left = water_left(observation)
+    todo: list[str] = []
+    if water and (left is None or left > 0 or refill > 0):
+        todo.append("%d 块需要浇水" % water)
+    if harvest:
+        todo.append("%d 块可收获" % harvest)
+    if not todo:
+        return []
+    return [
+        PremiseCheck(
+            "user",
+            False,
+            "先照顾作物：%s；除草/砍树/挖矿不是当前优先（可用 task=auto 或先完成照料）" % "，".join(todo),
+        )
+    ]
+
+
+def farm_routine_ability(
+    registry: Any,
+    *,
+    care_first: bool = True,
+    clock: Callable[[], float] = time.monotonic,
+) -> AbilitySpec:
     """构造 ``farm_routine``：模型只给任务与上限，机械步骤由本地执行。"""
     descriptor = AbilityDescriptor(
         id="farm_routine",
@@ -556,16 +593,23 @@ def farm_routine_ability(registry: Any, *, clock: Callable[[], float] = time.mon
         params={
             "task": "water/till/harvest/plant/refill/chop/clear/mine/auto"
             "（默认 auto：只做浇水、锄地、收获、装水；砍树/清理/挖矿必须显式指定）",
-            "max_targets": "本次最多处理几个目标（1～40，默认 16；批量越大模型请求越少）",
+            "max_targets": "本次最多处理几个目标（1～40，默认 16；chop/clear/mine 一次最多 8，默认 6）",
             "max_seconds": "本次最长秒数（5～120，默认 90）",
             "seed": "task=plant 时必填：背包里种子的名称或物品 id（模糊匹配）",
         },
         observation_needs=("entities", "inventory", "player.position", "player.selectedSlot", "player.energy", "menu"),
         scope="只处理当前观察范围内的目标；不决定种什么、不买卖、不离开当前场景；"
-        "chop 只砍野生树，clear 只清杂草/灌木，mine 只处理石头与矿石",
+        "chop 只砍野生树，clear 只清杂草/灌木，mine 只处理石头与矿石；"
+        "有作物要浇水/可收获时默认不做这三类破坏性任务",
         completion="该任务在当前观察范围内已没有剩余目标；达到上限或时长时如实报告剩余与失败",
-        limits=("max_targets<=40", "max_seconds<=120", "每次只处理一个目标", "取消立即停止"),
+        limits=("max_targets<=40", "chop/clear/mine 一次<=8", "max_seconds<=120", "取消立即停止"),
     )
+
+    def premises(params: Mapping[str, Any], observation: Observation) -> list[PremiseCheck]:
+        checks = _premises(params, observation)
+        if care_first and str(params.get("task") or "auto") in DESTRUCTIVE_TASKS:
+            checks.extend(_care_first_checks(observation))
+        return checks
 
     def start(params: Mapping[str, Any], observation: Observation, action_id: str) -> FarmRoutineDelegation:
         delegation = FarmRoutineDelegation(registry, params, observation, clock=clock)
@@ -575,7 +619,7 @@ def farm_routine_ability(registry: Any, *, clock: Callable[[], float] = time.mon
     return AbilitySpec(
         descriptor=descriptor,
         validate=_validate,
-        check_premises=_premises,
+        check_premises=premises,
         start=start,
     )
 

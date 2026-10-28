@@ -229,6 +229,36 @@ def test_上下文实体上限配置():
             config_from_mapping(dict(REQUIRED, max_notable_entities=bad))
 
 
+def test_照料优先开关默认开启():
+    config = config_from_mapping(dict(REQUIRED))
+    assert config.care_first is True
+    assert config.public()["care_first"] is True
+
+    off = config_from_mapping(dict(REQUIRED, care_first=False))
+    assert off.care_first is False
+
+    with pytest.raises(ConfigError):
+        config_from_mapping(dict(REQUIRED, care_first="no"))
+
+
+def test_破坏性任务不会自动续跑():
+    from stardew_agent.cli.wiring import routine_continuation
+    from stardew_agent.contracts.results import ActionResult
+
+    def result(task: str) -> ActionResult:
+        return ActionResult(
+            action_id="a1",
+            ability="farm_routine",
+            params={"task": task},
+            state="unknown",
+            evidence={"remaining": 5},
+        )
+
+    assert routine_continuation(result("clear")) is None
+    assert routine_continuation(result("mine")) is None
+    assert routine_continuation(result("water")) is not None
+
+
 def test_机械动作默认不暴露给模型():
     class Port:
         pass

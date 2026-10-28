@@ -266,10 +266,16 @@ flowchart LR
 | `task=harvest` | 处理 `harvestable=true` 的地块；用 `interact` 取走作物（**不挥动工具**，否则镰刀会毁掉作物） |
 | `task=plant` | 处理已耕且无作物的地块；必须给 `seed`（名称或物品 id 模糊匹配） |
 | `task=refill` | 处理 `refillable=true` 的水源格；**空壶也能补水**（只有“已满”才拒绝），补满后立即结束 |
-| `task=chop` | 处理 `terrain="Tree"` 的野生树；自动切斧头（果树不列入，避免误砍资产） |
-| `task=clear` | 处理 `terrain ∈ {Weeds, Grass, Bush}` 与 `objName ∈ {Weeds, Twig}` 的杂草/灌木/嫩枝；优先镰刀，嫩枝改切斧头 |
-| `task=mine` | 处理名称含 stone/node/ore/geode/quartz/石/矿/晶 的对象（石头、矿石）；自动切镐 |
+| `task=chop` | 处理 `terrain="Tree"` 的野生树；自动切斧头（果树不列入，避免误砍资产）；一次 ≤8 |
+| `task=clear` | 处理 `terrain ∈ {Weeds, Grass, Bush}` 与 `objName ∈ {Weeds, Twig}` 的杂草/灌木/嫩枝；优先镰刀，嫩枝改切斧头；一次 ≤8 |
+| `task=mine` | 处理名称含 stone/node/ore/geode/quartz/石/矿/晶 的对象（石头、矿石）；自动切镐；一次 ≤8 |
 | `task=auto` | 按 浇水 → 锄地 → 收获 → 装水 的顺序选第一个有目标的任务；水壶空且要浇时先 `refill`；**不含**砍树/清理/挖矿 |
+| `task=plant` | 处理已耕且无作物的地块；必须给 `seed`，且背包里要有匹配种子（`entity_counts.seeds>0`） |
+
+**照料优先（`care_first=true`）**：有作物需要浇水（水壶有水或附近可补水）或有作物可收获时，
+`chop/clear/mine` 会多出一条 `user` 前提并直接阻断，提示“先照顾作物”。
+破坏性任务一次最多 8 个目标，且 `remaining>0` 时不会自动续跑——每批结束后由模型重新判断，
+避免“除草 76 次、种菜 0 次”。需要允许先清理时把 `care_first` 设为 `false`。
 
 补水只改变水壶的 `water` 字段（数量和物品 id 都不变），所以 `inventory_delta`
 同时比较 `water/waterCapacity/tool`；否则补水会被误判成 `unknown`。

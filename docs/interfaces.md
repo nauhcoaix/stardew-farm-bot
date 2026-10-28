@@ -155,7 +155,8 @@
   `menu_ability(port)`、`inspect_menu_ability(port)`、`buy_item_ability(port)`、
   `menu_click_ability(port)`、`close_menu_ability(port)`、`craft_item_ability(port)`、
   `inventory_action_ability(port)`、`fish_ability(port, *,
-  validate_limits)`、`farm_routine_ability(registry)`、`composite_ability(definition, registry)`。
+  validate_limits)`、`farm_routine_ability(registry, *, care_first=True)`、
+  `composite_ability(definition, registry)`。
   `explore_ability` 的候选由接线注入（`build_candidates(...)["items"]`），能力本身不读数据库；
   商店/菜单能力用 `ShopPort` / `MenuPort`（`menudump/shopbuy/menuclick/menuclickinv/menuclose`）。
 - `farm_routine_ability`：任务与上限
@@ -163,6 +164,8 @@
   内部调用 `select_item`/`move_to`/`use`（收获走 `interact`，不挥动工具），
   因此这些底层动作默认 `exposed=False`。`auto` 只做浇水/锄地/收获/装水
   （水壶空时先补水），砍树、清理、挖矿必须显式指定任务。
+  `care_first=True`（默认）时，有作物要浇水/可收获会把 `chop/clear/mine` 用 `user` 前提挡住；
+  这三类任务一次最多 8 个目标，且剩余目标不自动续跑。
 - `inventory_delta` 比较物品数量与工具的 `water/waterCapacity/tool`：补水这类只改水量的
   动作才能被验证，而不是被判成 `unknown`。
 - `PremiseCheck(kind, met, detail)`，`kind ∈ {game, user, budget, advice}`；

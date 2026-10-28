@@ -25,7 +25,7 @@
 |---|---|---|
 | `move_to` | 走到坐标或现场对象旁 | 只用坐标/ref，不猜路线 |
 | `explore_area` | 走向未探索前沿 | 本地挑选最近的前沿候选，最多 20 步/180 秒 |
-| `farm_routine` | 批量农活与机械操作 | `task=water/till/harvest/plant/refill/chop/clear/mine/auto`；默认一批 16 个目标、剩余自动续跑 |
+| `farm_routine` | 批量农活与机械操作 | `task=water/till/harvest/plant/refill/chop/clear/mine/auto`；默认一批 16 个目标、剩余自动续跑；**有作物要照料时不做 chop/clear/mine**，这三类一次 ≤8 且不自动续跑 |
 | `interact` | 与对象/NPC/门/箱子交互 | 打开商店、对话、箱子等 |
 | `choose_menu_option` | 对话选项 | 只能点当前菜单里的 ref |
 | `inspect_menu` | 读取菜单 | 商店商品（序号/名称/价格）与可点组件坐标 |
@@ -235,6 +235,9 @@ stardew-agent skills --config config.json retire --id skill:xxx --reason "前提
 - `expose_mechanics` 默认 `false`：`use` / `select_item` 是 `farm_routine` 的内部动作，
   不出现在模型能力目录里，模型写了也会被 `parse_decision` 拒绝；
   `start-agent.bat run --expose-mechanics` 仅供调试或与旧行为对比。
+- `care_first` 默认 `true`：有作物需要浇水或可收获时，`chop/clear/mine` 会被
+  `user` 前提直接拦下（“先照顾作物”）；关掉它才会允许“边上有活先除草”。
+  破坏性任务本身还有一条硬限制：一次最多 8 个目标，且剩余目标不会自动续跑。
 - `max_notable_entities` 控制每次请求最多列出多少个非地块实体（默认 24，1～120）。
   地块压成 `observation.tiles` 通行网格，实体只保留非默认字段，另给
   `observation.entity_counts`（可锄/需浇/可收/可装水数量）。实测真实农场（半径 8）：

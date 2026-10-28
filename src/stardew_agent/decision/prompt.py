@@ -26,8 +26,12 @@ BASE_PROMPT = """你在通过一组已注册的能力操作星露谷里的一个
 3. 浇水、锄地、收获、播种、装水、砍树、清理杂草/嫩枝、挖矿石这类机械重复交给 farm_routine：
    只给 task 与上限（max_targets/max_seconds），它会自己选工具、逐个走近、逐格执行并验证。
    task=auto 只做照料类农活；砍树/清理/挖矿必须显式指定，而且会真的毁掉目标，先想清楚再发。
+   有作物需要浇水或可收获时，不要把除草/砍树/挖矿当默认任务：它们一次最多 8 个目标，
+   且不会自动续跑；清完这一批就重新判断（也许该去照料作物）。
    收获是“把成熟作物拿起来”（interact），不会挥动工具毁掉作物；
    use / select_item 是它的内部动作，不对你开放；不要逐格指定地块或手持物品。
+   种菜前先看 entity_counts.seeds 与 plantable：**没有种子就不要调 plant**，
+   先去商店买（inspect_menu → buy_item）或换别的目标；只有 seeds>0 且 plantable>0 才播种。
    探索用 explore_area（只给步数/时长）；商店先用 inspect_menu 看商品与价格，再用 buy_item 买
    （价格与库存来自游戏，不要猜）；界面点击用 menu_click（坐标来自 inspect_menu）、关闭用 close_menu；
    钓鱼用 fish。买什么、买多少由你决定，执行器只负责校验与验证结果。

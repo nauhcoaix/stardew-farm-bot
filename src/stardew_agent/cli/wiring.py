@@ -33,6 +33,7 @@ from ..abilities import (
     select_item_ability,
     use_ability,
 )
+from ..abilities.routines import DESTRUCTIVE_TASKS
 from ..bridge_client import Bridge
 from ..contracts.decision import AbilityCall, Decision
 from ..contracts.errors import ModelError, TransportError
@@ -90,6 +91,8 @@ def routine_continuation(result: ActionResult) -> AbilityCall | None:
     params = dict(result.params or {})
     if params.get("task") == "plant":
         return None  # 种子有限，续跑容易空转
+    if params.get("task") in DESTRUCTIVE_TASKS:
+        return None  # 除草/砍树/挖矿不自动续跑：每批之后交给模型重新判断
     return AbilityCall(ability="farm_routine", params=params)
 
 
@@ -119,6 +122,7 @@ def build_registry(
     menu_port: Any | None = None,
     inventory_port: Any | None = None,
     candidates: Callable[[Observation], Sequence[Mapping[str, Any]]] | None = None,
+    care_first: bool = True,
 ) -> AbilityRegistry:
     """注册基础能力；有持久化的已验证技能时再把它们作为能力注册。
 
@@ -139,7 +143,7 @@ def build_registry(
         registry.register(interact_ability(action_port))
         registry.register(menu_ability(action_port))
         # 例行程序要调用上面的底层能力，所以放在它们之后注册。
-        registry.register(farm_routine_ability(registry))
+        registry.register(farm_routine_ability(registry, care_first=care_first))
         if candidates is not None:
             registry.register(explore_ability(action_port, candidates))  # type: ignore[arg-type]
     if shop_port is not None:
@@ -367,6 +371,7 @@ async def build_runtime(
         menu_port=bridge,
         inventory_port=bridge,
         candidates=lambda observation: build_candidates(observation, store)["items"],
+        care_first=config.care_first,
     )
     budget = RunBudget(
         wall_clock_seconds=config.budget_seconds,

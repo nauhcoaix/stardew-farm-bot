@@ -535,6 +535,31 @@ def test_补水成功后水壶满了就停止():
     assert [call for call in action_port.calls if call[0] == "use"] == [("use", "@s1:e9")]
 
 
+def test_有作物要照料时不做破坏性任务():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    crop = entity("@s1:e1", "soil", "作物", 11, 10, tilled=True, needsWater=True, watered=False)
+    can = inventory(2, "浇水壶", tool="WateringCan", water=40, waterCapacity=40)
+    observation = observe(entities=[crop], inventory_rows=[can], selected_slot=2)
+
+    checks = spec.check_premises(spec.validate({"task": "clear"}), observation)
+    blocking = [check for check in checks if check.met is False and check.kind == "user"]
+    assert blocking and "先照顾作物" in blocking[0].detail
+
+    idle = observe(entities=[entity("@s1:e2", "tile", "地块", 10, 11)])
+    checks = spec.check_premises(spec.validate({"task": "clear"}), idle)
+    assert not [check for check in checks if check.kind == "user" and check.met is False]
+
+
+def test_破坏性任务一次最多八个目标():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    assert spec.validate({"task": "clear"})["max_targets"] == 6
+    assert spec.validate({"task": "mine", "max_targets": 8})["max_targets"] == 8
+    with pytest.raises(Rejected):
+        spec.validate({"task": "chop", "max_targets": 12})
+
+
 def test_农活前提在没有目标或缺工具时明确失败():
     registry, _move, _action = _routine_registry()
     spec = registry.get("farm_routine")

@@ -17,7 +17,7 @@ from stardew_agent.decision import (
     validate,
     validate_all,
 )
-from tests.helpers import entity, menu_row, observe
+from tests.helpers import entity, inventory, menu_row, observe
 
 
 def test_判据只接受观察契约内的路径():
@@ -182,6 +182,10 @@ def test_默认把地块压成网格并统计农活数量():
             entity("@s1:e2", "tile", "地块", 11, 11, diggable=True),
             entity("@s1:e3", "soil", "耕地", 12, 11, tilled=True, needsWater=True, watered=False),
         ],
+        inventory_rows=[
+            inventory(0, "防风草种子", count=2),
+            inventory(1, "锄头", tool="Hoe"),
+        ],
         x=10,
         y=10,
     )
@@ -190,6 +194,8 @@ def test_默认把地块压成网格并统计农活数量():
     assert [row["kind"] for row in view["entities"]] == ["soil"]
     assert view["entity_counts"]["diggable"] == 1
     assert view["entity_counts"]["needsWater"] == 1
+    assert view["entity_counts"]["plantable"] == 1
+    assert view["entity_counts"]["seeds"] == 2
     assert view["entities"][0]["needsWater"] is True
     assert "watered" not in view["entities"][0]
     assert view["tiles"]["origin"] == {"x": 10, "y": 11}
