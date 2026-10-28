@@ -58,6 +58,45 @@ def test_自动完成hello握手并串行请求():
     assert result == {"mode": "game"}
 
 
+def test_商店与菜单命令的读写语义():
+    async def scenario():
+        transport = QueueTransport()
+        bridge = Bridge(transport)
+
+        task = asyncio.create_task(bridge.menudump())
+        await asyncio.sleep(0.05)
+        request = transport.sent[-1]
+        assert request["command"] == "menudump"
+        assert "actionId" not in request
+        await transport.reply(request, {"type": "ShopMenu", "items": []})
+        await task
+
+        task = asyncio.create_task(bridge.shopbuy(2, 3))
+        await asyncio.sleep(0.05)
+        request = transport.sent[-1]
+        assert request["command"] == "shopbuy"
+        assert request["args"] == {"index": 2, "qty": 3}
+        assert request["actionId"].startswith("a")
+        await transport.reply(request, {"ok": True})
+        await task
+
+        for name, call, args in (
+            ("menuclick", lambda: bridge.menuclick(10, 20), {"x": 10, "y": 20}),
+            ("menuclickinv", lambda: bridge.menuclickinv(30, 40), {"x": 30, "y": 40}),
+            ("menuclose", lambda: bridge.menuclose(), {}),
+        ):
+            task = asyncio.create_task(call())
+            await asyncio.sleep(0.02)
+            request = transport.sent[-1]
+            assert request["command"] == name
+            assert request["args"] == args
+            assert request["actionId"].startswith("a")
+            await transport.reply(request, {"ok": True})
+            await task
+
+    asyncio.run(scenario())
+
+
 def test_写命令带动作ID读命令不带():
     async def scenario():
         transport = QueueTransport()

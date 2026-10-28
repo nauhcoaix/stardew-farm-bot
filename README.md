@@ -19,6 +19,29 @@
 
 任何“已学会种地/钓鱼”的说法都需要先完成 `evals/` 里的保留/禁用经验配对试验。
 
+## 能做什么（模型可见能力）
+
+| 能力 | 用途 | 说明 |
+|---|---|---|
+| `move_to` | 走到坐标或现场对象旁 | 只用坐标/ref，不猜路线 |
+| `explore_area` | 走向未探索前沿 | 本地挑选最近的前沿候选，最多 20 步/180 秒 |
+| `farm_routine` | 批量农活与机械操作 | `task=water/till/harvest/plant/refill/chop/clear/mine/auto`；默认一批 16 个目标、剩余自动续跑 |
+| `interact` | 与对象/NPC/门/箱子交互 | 打开商店、对话、箱子等 |
+| `choose_menu_option` | 对话选项 | 只能点当前菜单里的 ref |
+| `inspect_menu` | 读取菜单 | 商店商品（序号/名称/价格）与可点组件坐标 |
+| `buy_item` | 买种子/物品 | 价格与库存来自游戏 `menudump`；校验钱、单价上限、背包变化 |
+| `menu_click` | 点击菜单坐标 | 普通菜单或背包区域；坐标来自 `inspect_menu` |
+| `close_menu` | 关闭菜单 | 商店/对话/背包通用 |
+| `craft_item` | 按配方制作 | 材料由游戏扣除；验证背包该物品增加 |
+| `inventory_action` | 箱子/发货/放箱子 | `op=chest_put/chest_get/ship/place_chest`；按背包变化验证 |
+| `fish` | 委托独立钓鱼 Mod | 需要已安装 `StandaloneFishingSkill` |
+| 组合技能 | 已验证的步骤序列 | 由学习模块晋级后注册 |
+
+买种子不是单独能力：先 `interact` 打开商店 → `inspect_menu` 看价格 → `buy_item` 购买 →
+`close_menu`，再 `farm_routine {task:"plant", seed:"…"}` 播种。
+
+
+
 ## 目录
 
 ```text

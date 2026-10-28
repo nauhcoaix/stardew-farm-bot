@@ -17,11 +17,18 @@ from ..abilities import (
     AbilityRegistry,
     ActionPort,
     FishingPort,
+    buy_item_ability,
+    close_menu_ability,
     composite_ability,
+    craft_item_ability,
+    explore_ability,
     farm_routine_ability,
     fish_ability,
+    inspect_menu_ability,
     interact_ability,
+    inventory_action_ability,
     menu_ability,
+    menu_click_ability,
     move_ability,
     select_item_ability,
     use_ability,
@@ -108,11 +115,17 @@ def build_registry(
     *,
     store: ExperienceStore | None = None,
     expose_mechanics: bool = False,
+    shop_port: Any | None = None,
+    menu_port: Any | None = None,
+    inventory_port: Any | None = None,
+    candidates: Callable[[Observation], Sequence[Mapping[str, Any]]] | None = None,
 ) -> AbilityRegistry:
     """注册基础能力；有持久化的已验证技能时再把它们作为能力注册。
 
     ``select_item`` / ``use`` 是底层机械动作，默认只给本地例行程序（``farm_routine``）
     使用，不进模型能力目录；``expose_mechanics=True`` 仅用于调试或回归对比。
+    ``shop_port`` / ``menu_port`` 提供商店与菜单命令；``candidates`` 提供前沿候选
+    （运行时由观察 + 已知地形计算）。
     """
     registry = AbilityRegistry()
 
@@ -127,6 +140,17 @@ def build_registry(
         registry.register(menu_ability(action_port))
         # 例行程序要调用上面的底层能力，所以放在它们之后注册。
         registry.register(farm_routine_ability(registry))
+        if candidates is not None:
+            registry.register(explore_ability(action_port, candidates))  # type: ignore[arg-type]
+    if shop_port is not None:
+        registry.register(inspect_menu_ability(shop_port))
+        registry.register(buy_item_ability(shop_port))
+    if menu_port is not None:
+        registry.register(menu_click_ability(menu_port))
+        registry.register(close_menu_ability(menu_port))
+    if inventory_port is not None:
+        registry.register(craft_item_ability(inventory_port))
+        registry.register(inventory_action_ability(inventory_port))
     if fishing_port is not None:
         registry.register(fish_ability(fishing_port))
     if store is not None:
@@ -335,7 +359,14 @@ async def build_runtime(
     port = fishing_port if fishing_port is not None else (MailboxFishingPort(config.fishing_mailbox) if include_fishing else None)
 
     registry = build_registry(
-        bridge, port, store=store, expose_mechanics=config.expose_mechanics
+        bridge,
+        port,
+        store=store,
+        expose_mechanics=config.expose_mechanics,
+        shop_port=bridge,
+        menu_port=bridge,
+        inventory_port=bridge,
+        candidates=lambda observation: build_candidates(observation, store)["items"],
     )
     budget = RunBudget(
         wall_clock_seconds=config.budget_seconds,

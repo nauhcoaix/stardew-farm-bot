@@ -48,6 +48,7 @@ def snapshot(
     energy: int = 200,
     selected_slot: int = 0,
     can_move: bool = True,
+    money: int = 500,
 ) -> dict:
     entities = list(entities or [])
     scope = {
@@ -75,7 +76,7 @@ def snapshot(
             "maxEnergy": 270,
             "selectedSlot": selected_slot,
             "canMove": can_move,
-            "money": 500,
+            "money": money,
             "maxItems": 12,
         },
         "inventory": list(inventory_rows or []),

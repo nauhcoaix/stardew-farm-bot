@@ -238,11 +238,18 @@ flowchart LR
 | 能力 | 位置 | 一步做什么 | 怎么验证 |
 |---|---|---|---|
 | `move_to` | `abilities/navigation.py:78` | 下发一次桥移动（坐标或 near） | 重新观察位置，到达目标格或四邻格；位置没变即失败 |
+| `explore_area` | `abilities/explore.py` | 从注入的前沿候选里挑最近的点，逐步移动 | 每步用位置变化确认；没有候选即完成，到上限报部分完成 |
 | `farm_routine` | `abilities/routines.py` | 从现场挑一个目标，内部依次起 `select_item`/`move_to`/`use` 子委托 | 每个目标沿用 `use` 的 `expect` 前后观察判定；预算/步数/体力不足时如实报告部分完成 |
 | `select_item` | `abilities/interaction.py:72` | 一次 `select` | 快照 `player.selectedSlot` 是否变化 |
 | `use` | `abilities/interaction.py:119/137` | 一次 `use`，**第二次进入只核对** | `expect` 对应字段前后差分（`observation/diff.py:target_progress`）；无证据报 `unknown` |
 | `interact` | 同上 | 一次 `interact` | 同地块状态变化或新菜单 |
 | `choose_menu_option` | `abilities/interaction.py:189` | 一次 `menu` | 菜单关闭或内容变化，否则 `unknown` |
+| `inspect_menu` | `abilities/shop.py` | 一次 `menudump`（只读） | 返回商品/组件与价格；菜单已关闭报 `unknown` |
+| `buy_item` | `abilities/shop.py` | `menudump` 找序号 → `shopbuy` | 金钱减少且背包该物品增加；钱不够/没有该商品直接失败 |
+| `menu_click` | `abilities/shop.py` | 一次 `menuclick` 或 `menuclickinv` | 菜单关闭、菜单签名变化或金钱变化；否则 `unknown` |
+| `close_menu` | `abilities/shop.py` | 一次 `menuclose` | 重新观察菜单消失 |
+| `craft_item` | `abilities/inventory.py` | 一次 `craft` | 背包里该物品数量增加；否则 `unknown` |
+| `inventory_action` | `abilities/inventory.py` | `chestput` / `chestget` / `ship` / `placechest` 之一 | 背包槽位减少、物品增加或木材消耗；否则 `unknown` |
 | `fish` | `abilities/fishing.py:60` | 启动/轮询独立钓鱼 Mod 的 runId | Mod 报告 `completed` 才算成功；任务被替换即失败 |
 | 组合技能 | `abilities/composite.py:48` | 按步骤调用已注册能力 | 每步完成判据 + 技能总完成判据 |
 

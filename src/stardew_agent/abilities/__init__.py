@@ -12,7 +12,15 @@
 
 from .base import AbilitySpec, DelegationBase, PremiseCheck, blocking_premises, raise_for_premises
 from .composite import CompositeDelegation, composite_ability
+from .explore import ExploreDelegation, ExplorePort, explore_ability
 from .fishing import FishingDelegation, FishingPort, fish_ability
+from .inventory import (
+    CraftDelegation,
+    InventoryActionDelegation,
+    InventoryPort,
+    craft_item_ability,
+    inventory_action_ability,
+)
 from .interaction import (
     ActionPort,
     EntityActionDelegation,
@@ -26,30 +34,60 @@ from .interaction import (
 from .navigation import MoveDelegation, MovePort, move_ability
 from .registry import AbilityRegistry
 from .routines import FarmRoutineDelegation, farm_routine_ability
+from .shop import (
+    BuyItemDelegation,
+    CloseMenuDelegation,
+    InspectMenuDelegation,
+    MenuClickDelegation,
+    MenuPort,
+    ShopPort,
+    buy_item_ability,
+    close_menu_ability,
+    inspect_menu_ability,
+    menu_click_ability,
+)
 from .verification import inventory_delta, position_delta, scene_changed, tile_delta
 
 __all__ = [
     "AbilityRegistry",
     "AbilitySpec",
     "ActionPort",
+    "BuyItemDelegation",
+    "CloseMenuDelegation",
     "CompositeDelegation",
+    "CraftDelegation",
     "DelegationBase",
     "EntityActionDelegation",
+    "ExploreDelegation",
+    "ExplorePort",
     "FarmRoutineDelegation",
     "FishingDelegation",
     "FishingPort",
+    "InspectMenuDelegation",
+    "InventoryActionDelegation",
+    "InventoryPort",
+    "MenuClickDelegation",
     "MenuDelegation",
+    "MenuPort",
     "MoveDelegation",
     "MovePort",
     "PremiseCheck",
     "SelectDelegation",
+    "ShopPort",
     "blocking_premises",
+    "buy_item_ability",
+    "close_menu_ability",
     "composite_ability",
+    "craft_item_ability",
+    "explore_ability",
     "farm_routine_ability",
     "fish_ability",
+    "inspect_menu_ability",
     "interact_ability",
+    "inventory_action_ability",
     "inventory_delta",
     "menu_ability",
+    "menu_click_ability",
     "move_ability",
     "position_delta",
     "raise_for_premises",

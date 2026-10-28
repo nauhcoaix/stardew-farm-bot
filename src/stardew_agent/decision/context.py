@@ -197,6 +197,22 @@ _EVIDENCE_FIELDS = (
     "completion_predicate",
     "completion_predicate_error",
     "error",
+    # 商店/菜单/探索结果
+    "menu_type",
+    "items",
+    "sales",
+    "summary",
+    "response",
+    "shop_item",
+    "index",
+    "price",
+    "qty",
+    "spent",
+    "gained",
+    "expected_cost",
+    "visited",
+    "menu_closed",
+    "money_changed",
 )
 
 
@@ -213,7 +229,14 @@ def _compact_result(result: Mapping[str, Any]) -> dict:
     row = {key: result.get(key) for key in _RESULT_FIELDS if result.get(key) is not None}
     evidence = result.get("evidence")
     if isinstance(evidence, Mapping):
-        kept = {key: evidence.get(key) for key in _EVIDENCE_FIELDS if evidence.get(key) is not None}
+        kept = {}
+        for key in _EVIDENCE_FIELDS:
+            value = evidence.get(key)
+            if value is None:
+                continue
+            if isinstance(value, list):
+                value = value[:12]
+            kept[key] = value
         if kept:
             row["evidence"] = kept
     return row

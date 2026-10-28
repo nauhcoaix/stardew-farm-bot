@@ -26,7 +26,24 @@ from ..contracts.version import BRIDGE_PROTOCOL_VERSION
 
 DEFAULT_ENDPOINT = "ws://127.0.0.1:17654/"
 #: 用于游戏桥有"动作 ID 去重 + 结果缓存"保障的写命令
-WRITE_COMMANDS = frozenset({"move", "select", "use", "interact", "menu"})
+WRITE_COMMANDS = frozenset(
+    {
+        "move",
+        "select",
+        "use",
+        "interact",
+        "menu",
+        "menuclick",
+        "menuclickinv",
+        "menuclose",
+        "shopbuy",
+        "craft",
+        "chestput",
+        "chestget",
+        "ship",
+        "placechest",
+    }
+)
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 
 
@@ -213,6 +230,38 @@ class Bridge:
 
     async def menu(self, ref: str, **kwargs: Any) -> dict:
         return await self.request("menu", {"target": ref}, **kwargs)
+
+    async def menudump(self) -> dict:
+        """只读：当前菜单里可点的组件与商店商品（含 index/name/price/x/y）。"""
+        return await self.request("menudump", {})
+
+    async def menuclick(self, x: int, y: int, **kwargs: Any) -> dict:
+        return await self.request("menuclick", {"x": int(x), "y": int(y)}, **kwargs)
+
+    async def menuclickinv(self, x: int, y: int, **kwargs: Any) -> dict:
+        return await self.request("menuclickinv", {"x": int(x), "y": int(y)}, **kwargs)
+
+    async def menuclose(self, **kwargs: Any) -> dict:
+        return await self.request("menuclose", {}, **kwargs)
+
+    async def shopbuy(self, index: int, qty: int = 1, **kwargs: Any) -> dict:
+        """在已打开的商店里购买指定序号与数量（价格由游戏结算）。"""
+        return await self.request("shopbuy", {"index": int(index), "qty": int(qty)}, **kwargs)
+
+    async def chestput(self, tx: int, ty: int, slot: int, **kwargs: Any) -> dict:
+        return await self.request("chestput", {"x": int(tx), "y": int(ty), "slot": int(slot)}, **kwargs)
+
+    async def chestget(self, tx: int, ty: int, name: str = "", **kwargs: Any) -> dict:
+        return await self.request("chestget", {"x": int(tx), "y": int(ty), "name": str(name)}, **kwargs)
+
+    async def ship(self, slot: int, **kwargs: Any) -> dict:
+        return await self.request("ship", {"slot": int(slot)}, **kwargs)
+
+    async def placechest(self, tx: int, ty: int, **kwargs: Any) -> dict:
+        return await self.request("placechest", {"x": int(tx), "y": int(ty)}, **kwargs)
+
+    async def bin(self) -> dict:
+        return await self.request("bin", {})
 
     async def reset(self) -> dict:
         """清空 Mod 的动作记录（幂等表）。"""

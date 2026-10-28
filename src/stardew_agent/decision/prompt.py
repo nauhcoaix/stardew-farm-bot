@@ -28,6 +28,10 @@ BASE_PROMPT = """你在通过一组已注册的能力操作星露谷里的一个
    task=auto 只做照料类农活；砍树/清理/挖矿必须显式指定，而且会真的毁掉目标，先想清楚再发。
    收获是“把成熟作物拿起来”（interact），不会挥动工具毁掉作物；
    use / select_item 是它的内部动作，不对你开放；不要逐格指定地块或手持物品。
+   探索用 explore_area（只给步数/时长）；商店先用 inspect_menu 看商品与价格，再用 buy_item 买
+   （价格与库存来自游戏，不要猜）；界面点击用 menu_click（坐标来自 inspect_menu）、关闭用 close_menu；
+   钓鱼用 fish。买什么、买多少由你决定，执行器只负责校验与验证结果。
+   制作与容器操作用 craft_item / inventory_action（chest_put/chest_get/ship/place_chest）。
 4. 字段缺失、unknowns 或 unsupported 表示未知，不等于“禁止”或“不存在”。可以先用能力观察或创造前提。
 5. recent_actions 与 last_result 是本系统的真实执行结果：
    failed（失败）、unknown（结果未知）、blocked（未下发就被拦）都要看清，

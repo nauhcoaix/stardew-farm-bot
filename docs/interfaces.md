@@ -62,7 +62,10 @@
 - `Bridge(transport=None, *, endpoint, protocol, default_timeout_ms, connector,
   timeout_grace_seconds)`：异步上下文管理器；`request(command, args, *, timeout_ms,
   action_id)`。
-- 薄封装：`hello/snapshot/status/move/select/use/interact/menu/reset/recipes/craft/stop`。
+- 薄封装：`hello/snapshot/status/move/select/use/interact/menu/menudump/menuclick/
+  menuclickinv/menuclose/shopbuy/chestput/chestget/ship/placechest/bin/reset/recipes/craft/stop`。
+- 写命令（`move/select/use/interact/menu/menuclick/menuclickinv/menuclose/shopbuy/craft/
+  chestput/chestget/ship/placechest`）带 `actionId`；读命令（`snapshot/status/menudump`…）不带。
 - 错误语义：写命令超时/断连 → `ResultUnknown`；读命令 → `TransportError`；
   不匹配响应 → `ProtocolError`；桥返回失败 → `BridgeError(code)`；并发请求 → `OwnershipBusy`。
 - **副作用**：网络 I/O；一条连接同一时刻只有一个请求在途。
@@ -147,9 +150,14 @@
   model_visible/validate_params/validate_model_params/check_premises/predicates/start`。
   `start` 统一校验参数与前提；`descriptors` 只返回 `exposed=True` 的能力，
   `validate_model_params` 拒绝模型下发隐藏能力（机械动作）。
-- 能力工厂：`move_ability(port)`、`select_item_ability(port)`、`use_ability(port)`、
-  `interact_ability(port)`、`menu_ability(port)`、`fish_ability(port, *,
+- 能力工厂：`move_ability(port)`、`explore_ability(port, candidates, *, clock)`、
+  `select_item_ability(port)`、`use_ability(port)`、`interact_ability(port)`、
+  `menu_ability(port)`、`inspect_menu_ability(port)`、`buy_item_ability(port)`、
+  `menu_click_ability(port)`、`close_menu_ability(port)`、`craft_item_ability(port)`、
+  `inventory_action_ability(port)`、`fish_ability(port, *,
   validate_limits)`、`farm_routine_ability(registry)`、`composite_ability(definition, registry)`。
+  `explore_ability` 的候选由接线注入（`build_candidates(...)["items"]`），能力本身不读数据库；
+  商店/菜单能力用 `ShopPort` / `MenuPort`（`menudump/shopbuy/menuclick/menuclickinv/menuclose`）。
 - `farm_routine_ability`：任务与上限
   `{task: auto|water|till|harvest|plant|refill|chop|clear|mine, max_targets, max_seconds, seed}`；
   内部调用 `select_item`/`move_to`/`use`（收获走 `interact`，不挥动工具），
