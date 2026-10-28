@@ -142,8 +142,10 @@
 - `farm_routine_ability`：任务与上限
   `{task: auto|water|till|harvest|plant|refill|chop|clear|mine, max_targets, max_seconds, seed}`；
   内部调用 `select_item`/`move_to`/`use`（收获走 `interact`，不挥动工具），
-  因此这些底层动作默认 `exposed=False`。`auto` 只做浇水/锄地/收获/装水，
-  砍树、清理、挖矿必须显式指定任务。
+  因此这些底层动作默认 `exposed=False`。`auto` 只做浇水/锄地/收获/装水
+  （水壶空时先补水），砍树、清理、挖矿必须显式指定任务。
+- `inventory_delta` 比较物品数量与工具的 `water/waterCapacity/tool`：补水这类只改水量的
+  动作才能被验证，而不是被判成 `unknown`。
 - `PremiseCheck(kind, met, detail)`，`kind ∈ {game, user, budget, advice}`；
   只有 `game/user/budget` 明确为假时才阻止下发。
 

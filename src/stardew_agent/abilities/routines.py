@@ -145,6 +145,15 @@ def water_left(observation: Observation) -> int | None:
     return None
 
 
+def water_capacity(observation: Observation) -> int | None:
+    """水壶容量；快照没给 ``waterCapacity`` 时为 ``None``。"""
+    for item in observation.inventory:
+        if any(hint in _item_text(item) for hint in TOOL_HINTS["water"]):
+            capacity = item.get("waterCapacity")
+            return int(capacity) if isinstance(capacity, int) else None
+    return None
+
+
 def seed_slot(observation: Observation, seed: str) -> int | None:
     """按名称/物品 id 找种子槽位。"""
     want = (seed or "").strip().lower()
@@ -211,6 +220,10 @@ class FarmRoutineDelegation(DelegationBase):
     def _resolve_task(self, observation: Observation) -> str:
         if self.requested_task != "auto":
             return self.requested_task
+        # 有作物要浇但水壶空了：先补水，省掉“浇水被前提拦住 → 再发 refill”的一轮。
+        left = water_left(observation)
+        if left == 0 and remaining_targets(observation, "water") and remaining_targets(observation, "refill"):
+            return "refill"
         for task in AUTO_ORDER:
             if remaining_targets(observation, task):
                 return task
@@ -276,6 +289,25 @@ class FarmRoutineDelegation(DelegationBase):
             for entity in remaining_targets(observation, self.task)
             if self._key(entity) not in self.attempted
         ]
+        if self.task == "refill":
+            left, capacity = water_left(observation), water_capacity(observation)
+            if left is not None and capacity is not None and left >= capacity:
+                detail = "水壶已满（%d/%d），补水结束" % (left, capacity)
+                if self.done:
+                    return self.finish(
+                        "completed",
+                        "本次装水：完成 %d 个，%s" % (len(self.done), detail),
+                        done=list(self.done),
+                        failed=list(self.failed),
+                        remaining=0,
+                    )
+                return self.finish(
+                    "unknown",
+                    "水壶已满（%d/%d），没有发生补水" % (left, capacity),
+                    done=[],
+                    failed=list(self.failed),
+                    remaining=0,
+                )
         if not pending:
             if self.done:
                 detail = "本次%s：完成 %d 个" % (_task_label(self.task), len(self.done))
@@ -458,16 +490,32 @@ def _premises(params: Mapping[str, Any], observation: Observation) -> list[Premi
                     "背包里有%s" % label if slot is not None else "背包里没有%s" % label,
                 )
             )
-        if slot is not None and task in ("water", "refill"):
+        if slot is not None and task == "water":
             left = water_left(observation)
             if left is not None:
                 checks.append(
                     PremiseCheck(
                         "game",
                         left > 0,
-                        "水壶剩余 %d 次" % left if left > 0 else "水壶没水：先执行 task=refill",
+                        "水壶剩余 %d 次" % left if left > 0 else "水壶没水：先执行 task=refill（或 task=auto）",
                     )
                 )
+        if slot is not None and task == "refill":
+            left = water_left(observation)
+            capacity = water_capacity(observation)
+            if left is not None and capacity is not None:
+                checks.append(
+                    PremiseCheck(
+                        "game",
+                        left < capacity,
+                        "水壶 %d/%d，可以补水" % (left, capacity)
+                        if left < capacity
+                        else "水壶已满（%d/%d），不需要补水" % (left, capacity),
+                    )
+                )
+            elif left is not None:
+                # 没有容量信息时，空壶一定需要补水；满不满只能由桥在动作时判断。
+                checks.append(PremiseCheck("game", True, "水壶剩余 %d 次（容量未知）" % left))
     if task == "plant":
         seed = str(params.get("seed") or "")
         slot = seed_slot(observation, seed)

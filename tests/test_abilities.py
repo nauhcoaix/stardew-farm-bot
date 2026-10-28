@@ -443,6 +443,91 @@ def test_auto不把砍树清障挖矿算作农活():
     assert any(check.met is False and "没有可浇" in check.detail for check in checks)
 
 
+def test_补水前提允许空壶_满壶才拒绝():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    params = spec.validate({"task": "refill"})
+    water = entity("@s1:e9", "water", "水源", 11, 10, refillable=True, passable=False)
+
+    empty = observe(
+        entities=[water],
+        inventory_rows=[inventory(2, "喷壶", tool="WateringCan", water=0, waterCapacity=40)],
+    )
+    checks = spec.check_premises(params, empty)
+    assert not [check for check in checks if check.met is False], checks
+    assert any("可以补水" in check.detail for check in checks)
+
+    full = observe(
+        entities=[water],
+        inventory_rows=[inventory(2, "喷壶", tool="WateringCan", water=40, waterCapacity=40)],
+    )
+    checks = spec.check_premises(params, full)
+    assert any(check.met is False and "已满" in check.detail for check in checks)
+
+
+def test_补水成功以水量变化作为证据():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    water = entity("@s1:e9", "water", "水源", 11, 10, refillable=True, passable=False)
+    can = inventory(2, "喷壶", tool="WateringCan", water=0, waterCapacity=40)
+    params = spec.validate({"task": "refill", "max_targets": 1})
+    before = observe(entities=[water], inventory_rows=[can], selected_slot=2)
+    delegation = spec.start(params, before, "a23")
+
+    refilled = observe(
+        entities=[water],
+        inventory_rows=[inventory(2, "喷壶", tool="WateringCan", water=40, waterCapacity=40)],
+        selected_slot=2,
+    )
+    progress = None
+    for row in [before, before, before, refilled]:
+        progress = asyncio.run(delegation.step(row))
+        if progress.done:
+            break
+
+    assert progress is not None and progress.state == "completed"
+    assert progress.evidence["done"] == [{"tile": {"x": 11, "y": 10}, "task": "refill"}]
+
+
+def test_auto在水壶空时先去补水():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    crop = entity("@s1:e1", "soil", "作物", 12, 10, tilled=True, watered=False, needsWater=True)
+    water = entity("@s1:e9", "water", "水源", 10, 11, refillable=True, passable=False)
+    empty = inventory(2, "喷壶", tool="WateringCan", water=0, waterCapacity=40)
+    observation = observe(entities=[crop, water], inventory_rows=[empty], selected_slot=2)
+
+    delegation = spec.start(spec.validate({"task": "auto"}), observation, "a24")
+    assert delegation.task == "refill"
+
+
+def test_补水成功后水壶满了就停止():
+    registry, _move, action_port = _routine_registry()
+    spec = registry.get("farm_routine")
+    water_a = entity("@s1:e9", "water", "水源", 11, 10, refillable=True, passable=False)
+    water_b = entity("@s1:e10", "water", "水源", 12, 10, refillable=True, passable=False)
+    can = inventory(2, "喷壶", tool="WateringCan", water=0, waterCapacity=40)
+    params = spec.validate({"task": "refill", "max_targets": 4})
+    before = observe(entities=[water_a, water_b], inventory_rows=[can], selected_slot=2)
+    delegation = spec.start(params, before, "a25")
+
+    refilled = observe(
+        entities=[water_a, water_b],
+        inventory_rows=[inventory(2, "喷壶", tool="WateringCan", water=40, waterCapacity=40)],
+        selected_slot=2,
+    )
+    progress = None
+    for row in [before, before, before, refilled]:
+        progress = asyncio.run(delegation.step(row))
+        if progress.done:
+            break
+
+    assert progress is not None and progress.state == "completed"
+    assert len(progress.evidence["done"]) == 1
+    assert progress.evidence["failed"] == []
+    assert [call for call in action_port.calls if call[0] == "use"] == [("use", "@s1:e9")]
+
+
 def test_农活前提在没有目标或缺工具时明确失败():
     registry, _move, _action = _routine_registry()
     spec = registry.get("farm_routine")

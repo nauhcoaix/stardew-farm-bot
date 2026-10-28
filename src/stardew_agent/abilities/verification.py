@@ -43,7 +43,15 @@ def inventory_delta(before: Observation, after: Observation) -> dict:
             slot = item.get("slot")
             if slot is None:
                 continue
-            rows[int(slot)] = {"name": item.get("name"), "count": item.get("count"), "itemId": item.get("itemId")}
+            rows[int(slot)] = {
+                "name": item.get("name"),
+                "count": item.get("count"),
+                "itemId": item.get("itemId"),
+                # 水壶补水只改变水量，数量和物品 id 都不变，必须单独比较才能验证。
+                "water": item.get("water"),
+                "waterCapacity": item.get("waterCapacity"),
+                "tool": item.get("tool"),
+            }
         return rows
 
     old, new = index(before), index(after)
