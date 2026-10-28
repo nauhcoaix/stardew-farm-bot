@@ -19,7 +19,7 @@ from stardew_agent.abilities import (
     use_ability,
 )
 from stardew_agent.contracts.decision import AbilityCall
-from stardew_agent.contracts.errors import PremiseFailed, Rejected
+from stardew_agent.contracts.errors import AgentError, PremiseFailed, Rejected
 from stardew_agent.experience import build_skill
 from stardew_agent.observation import target_id
 from tests.helpers import entity, inventory, menu_row, observe
@@ -34,6 +34,17 @@ class FakeMovePort:
         self.calls.append((x, y, near))
         self.kwargs.append(dict(kwargs))
         return {"ok": True, "changed": True}
+
+
+class PathBlocked(AgentError):
+    code = "PATH_BLOCKED"
+
+
+class BlockedMovePort:
+    """模拟 mod 明确返回 PATH_BLOCKED：应当作为失败结果交给模型，而不是抛出去。"""
+
+    async def move(self, x=None, y=None, near=None, **kwargs):
+        raise PathBlocked("PATH_BLOCKED: 起点 (5,10) → 目标 (40,10)")
 
 
 class FakeActionPort:
@@ -102,6 +113,16 @@ def test_移动没有让位置变化就失败():
     assert "没有改变位置" in progress.detail
 
 
+def test_寻路失败作为失败结果返回():
+    spec = move_ability(BlockedMovePort())
+    start = observe(x=5, y=10)
+    delegation = spec.start(spec.validate({"x": 40, "y": 10}), start, "a-blocked")
+    result = run_step(delegation, start)
+    assert result.state == "failed"
+    assert result.evidence["error"] == "PATH_BLOCKED"
+    assert "走不过去" in result.detail
+
+
 def test_出口切图算移动完成而不是失败():
     port = FakeMovePort()
     spec = move_ability(port)
@@ -134,13 +155,16 @@ def test_坐标负一表示保持当前轴():
     spec = move_ability(port)
     params = spec.validate({"x": -1, "y": 15})
     assert params == {"x": -1, "y": 15, "max_steps": 3}
-    with pytest.raises(Rejected):
-        spec.validate({"x": -1, "y": -1})
+    both = spec.validate({"x": -1, "y": -1})
+    assert both == {"x": -1, "y": -1, "max_steps": 3}
     start = observe(x=10, y=10)
     delegation = spec.start(params, start, "a-axis")
     assert delegation.target == (10, 15)
     assert run_step(delegation, start).state == "running"
     assert port.calls == [(10, 15, None)]
+    stay = spec.start(both, start, "a-stay")
+    assert stay.target == (10, 10)
+    assert run_step(stay, start).state == "completed"
 
 
 def test_坐标移动中途切图也按完成处理():
@@ -653,6 +677,7 @@ def test_委托把稳定动作id传给端口():
     delegation = spec.start(spec.validate({"x": 12, "y": 10, "max_steps": 2}), start, "a-fixed")
     run_step(delegation, start)
     assert move_port.kwargs[-1]["action_id"] == "a-fixed"
+    assert move_port.kwargs[-1]["timeout_ms"] == 30000
 
     action_port = FakeActionPort()
     use_spec = use_ability(action_port)

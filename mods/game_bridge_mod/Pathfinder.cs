@@ -14,6 +14,18 @@ internal static class Pathfinder
     //: 搜索上限：超过后按“目标太远/被围住”处理，避免卡住整个游戏线程。
     public const int MaxExpanded = 24000;
 
+    //: 角色（NPC/宠物/牲畜）挡路不算墙，但绕开走更省时间。
+    private const int CharacterPenalty = 12;
+
+    private static bool Occupied(GameLocation location, Point tile)
+    {
+        foreach (var npc in location.characters)
+            if (npc.TilePoint == tile) return true;
+        foreach (var animal in location.animals.Values)
+            if (animal.TilePoint == tile) return true;
+        return false;
+    }
+
     public static List<Point>? Find(GameLocation location, Point start, Point target, bool near, bool allowExit)
     {
         bool Arrived(Point p) => near
@@ -37,7 +49,7 @@ internal static class Pathfinder
                 if (!isExit && !Observations.Walkable(location, next)) continue;
                 if (!Arrived(next) && IsWarpTile(location, next)) continue;
 
-                var nextCost = cost[current] + 1;
+                var nextCost = cost[current] + 1 + (Occupied(location, next) ? CharacterPenalty : 0);
                 if (cost.TryGetValue(next, out var known) && known <= nextCost) continue;
                 cost[next] = nextCost;
                 parent[next] = current;

@@ -61,9 +61,9 @@ public static class GameActions
         private readonly bool exitTileWalkable;
         private const int MaxReplans = 3;
         private const double StallSeconds = 1.2;
-        private const double WaitForCharacterSeconds = 1.5;
+        private const double WaitForCharacterSeconds = 2.5;
         private const double ExitWaitSeconds = 2.0;
-        private const float WaypointTolerance = 12f;
+        private const float WaypointTolerance = 6f;
         private const float ExitTolerance = 3f;
         private bool nearGoal;
         private Point goal;
@@ -76,6 +76,7 @@ public static class GameActions
         private string? exitActionError;
         private int replans;
         private bool moved;
+        private Point lastTile = Observations.Position;
 
         public MoveAction(Observations observations, IReflectionHelper reflection, Point tile, Observations.Target? target, string? reference)
         {
@@ -92,22 +93,32 @@ public static class GameActions
             simulator.SetValue(input);
         }
 
+        //: 目标格本身走不进去（树/石头/家具/水）：退一步“走到旁边”，别直接报不可达。
+        private void RelaxIfBlockedGoal()
+        {
+            if (nearGoal || exitGoal || Observations.Walkable(location, goal)) return;
+            nearGoal = true;
+            replans = 0;
+        }
+
         //: 用 A* 找路（4 邻接、曼哈顿启发）；找不到就明确报“不可达”，不原地打转。
         private Queue<Point> BuildPath()
         {
             if (!Observations.InBounds(location, goal) && !exitGoal)
                 throw new ActionFault("INVALID_ARGUMENT", "坐标超出地图范围。");
+            RelaxIfBlockedGoal();
             var nodes = Pathfinder.Find(location, Observations.Position, goal, nearGoal, exitGoal);
             if (nodes == null)
                 throw new ActionFault(
                     "PATH_BLOCKED",
-                    "A* 找不到可行路径：目标可能被家具/角色挡住，或需要先经过门/楼梯。换目标，或先 move_to 到中间点。"
+                    $"A* 找不到从 ({Observations.Position.X},{Observations.Position.Y}) 到 ({goal.X},{goal.Y}) 的路径：目标可能被家具/角色围住。换目标，或先 move_to 到中间点。"
                 );
             return new Queue<Point>(nodes);
         }
 
         private bool TryReplan()
         {
+            RelaxIfBlockedGoal();
             if (replans >= MaxReplans) return false;
             var nodes = Pathfinder.Find(location, Observations.Position, goal, nearGoal, exitGoal);
             if (nodes == null) return false;
@@ -167,6 +178,12 @@ public static class GameActions
             {
                 moved = true;
                 lastPosition = Game1.player.Position;
+            }
+            //: 用“所在格子”判断有没有前进：贴着墙抖动时像素在变，但格子不变。
+            var tile = Observations.Position;
+            if (tile != lastTile)
+            {
+                lastTile = tile;
                 lastMoved = now;
                 blockedSince = DateTime.MinValue;
             }
@@ -203,25 +220,31 @@ public static class GameActions
 
             if ((now - lastMoved).TotalSeconds > StallSeconds)
             {
+                //: 正在等角色让路：这段时间不算“卡死”，等满 WaitForCharacterSeconds 再重算。
+                if (blockedSince != DateTime.MinValue) { lastMoved = now; return null; }
                 if (!TryReplan())
                     throw new ActionFault(
                         "PATH_BLOCKED",
-                        $"连续 {StallSeconds:0.0} 秒没有前进，A* 重算 {replans} 次仍未脱困。"
+                        $"连续 {StallSeconds:0.0} 秒没有换格子（{Observations.Position.X},{Observations.Position.Y} → {goal.X},{goal.Y}），A* 重算 {replans} 次仍未脱困。"
                     );
             }
 
             var next = path.Peek();
-            if (!(exitGoal && next == goal) && !Observations.Walkable(location, next))
+            var characterBlocked = BlockedByCharacter(next);
+            if ((!(exitGoal && next == goal) && !Observations.Walkable(location, next)) || characterBlocked)
             {
-                // 被 NPC/宠物临时挡住：先等一会儿，别把路直接判死；仍不通再重算。
-                if (BlockedByCharacter(next))
+                // 被角色/家具临时挡住：先等一会儿，别把路直接判死；仍不通再重算绕行。
+                if (characterBlocked)
                 {
                     if (blockedSince == DateTime.MinValue) blockedSince = now;
                     else if ((now - blockedSince).TotalSeconds < WaitForCharacterSeconds) return null;
                     blockedSince = DateTime.MinValue;
                 }
                 if (!TryReplan())
-                    throw new ActionFault("PATH_BLOCKED", "路径被新的障碍挡住，A* 重算后仍不可达。");
+                    throw new ActionFault(
+                        "PATH_BLOCKED",
+                        $"下一格 ({next.X},{next.Y}) 被{(characterBlocked ? "角色/动物" : "家具或地形")}挡住，A* 重算 {replans} 次仍不可达（{Observations.Position.X},{Observations.Position.Y} → {goal.X},{goal.Y}）。"
+                    );
                 return null;
             }
 

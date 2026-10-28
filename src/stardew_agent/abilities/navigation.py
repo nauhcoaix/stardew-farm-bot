@@ -18,7 +18,13 @@ from .base import AbilitySpec, DelegationBase, PremiseCheck, reject_unknown_para
 from .verification import scene_changed
 
 #: 现场引用失效类错误：重新观察比原地重试更有意义
-STALE_CODES = frozenset({"STALE_REF", "MENU_MISMATCH", "TRANSITION", "CANCELLED"})
+STALE_CODES = frozenset({"STALE_REF", "MENU_MISMATCH", "TRANSITION", "CANCELLED", "TIMEOUT"})
+
+#: 长距离移动可能跨过大半张地图；默认 15 秒不够，单独放宽到 30 秒。
+MOVE_TIMEOUT_MS = 30000
+
+#: 明确“走不过去”的错误：作为失败结果交给模型换目标，而不是中断整轮。
+PATH_CODES = frozenset({"PATH_BLOCKED", "OUT_OF_REACH", "INVALID_ARGUMENT"})
 
 
 class MovePort(Protocol):
@@ -143,12 +149,17 @@ class MoveDelegation(DelegationBase):
         try:
             # 同一个逻辑委托始终用同一个 actionId：传输重试/停止都能对上号。
             if self.ref is not None:
-                await self.port.move(near=self.ref, action_id=self.action_id)
+                await self.port.move(near=self.ref, action_id=self.action_id, timeout_ms=MOVE_TIMEOUT_MS)
             else:
-                await self.port.move(x=self.target[0], y=self.target[1], action_id=self.action_id)
+                await self.port.move(
+                    x=self.target[0], y=self.target[1], action_id=self.action_id, timeout_ms=MOVE_TIMEOUT_MS
+                )
         except AgentError as exc:
-            if getattr(exc, "code", "") in STALE_CODES:
-                return self.finish("failed", "移动被拒绝：%s" % exc, error=exc.code)
+            code = getattr(exc, "code", "")
+            if code in STALE_CODES:
+                return self.finish("failed", "移动被拒绝：%s" % exc, error=code)
+            if code in PATH_CODES:
+                return self.finish("failed", "走不过去：%s" % exc, error=code)
             raise
         self.last_request_position = here
         positions = list(self.evidence.get("positions") or [])
@@ -185,8 +196,6 @@ def move_ability(port: MovePort, *, clock: Callable[[], float] = time.monotonic)
             return {"near": require_str(params, "near"), "max_steps": max_steps}
         x = require_int(params, "x", low=-1, high=400)
         y = require_int(params, "y", low=-1, high=400)
-        if x == -1 and y == -1:
-            raise Rejected("x 和 y 不能同时为 -1：-1 表示该轴保持当前位置，至少给一个真实坐标")
         return {"x": x, "y": y, "max_steps": max_steps}
 
     def premises(params: Mapping[str, Any], observation: Observation) -> list[PremiseCheck]:

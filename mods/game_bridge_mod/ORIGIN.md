@@ -47,6 +47,18 @@
 - 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-exitfix`）。
 
+## 本轮修改（2026-10-28，版本 0.1.4）
+
+- 继续加固寻路（“这个版本还是难以寻路”）：
+  - A* 把 NPC/宠物/牲畜所在格当**高代价格**（不是墙）：能绕就绕，绕不开才穿；
+  - 卡住判定改成**看格子**：贴着墙/角色抖动时像素在变但格子不变，也会在 1.2 秒后重算；
+  - 等角色让路时不会触发“卡死重算”，最多等 2.5 秒再绕行；
+  - 到点容差 12px → 6px，减少拐角处提前转向导致的卡墙；
+  - 目标格本身走不进去（树/石头/家具/水）时自动退化为“走到相邻格”，不再直接报不可达；
+  - `PATH_BLOCKED` 现在带起点/终点/挡路原因，方便定位是哪一格不通。
+- 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-pathfix`）。
+
 ## 构建
 
 ```powershell
