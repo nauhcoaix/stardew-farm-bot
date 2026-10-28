@@ -3,7 +3,9 @@
 模型回复不是可信输入。这里把它变成 :class:`Decision`，并保证：
 
 * 决策绑定的是“我们给它的那次观察”，而不是模型自称的时刻；
-* 未知能力、非法参数、非法判据一律拒绝（``Rejected``）；
+* 未知能力、非法参数一律拒绝（``Rejected``）；
+* 非法判据（``completion`` / ``stop_conditions``）不丢弃动作：它们是可选的，
+  写错就忽略并记录到 ``predicate_errors``，让模型下一轮看到原因；
 * 允许不下发动作（``ability: null``），但必须说明原因。
 """
 
@@ -15,6 +17,7 @@ from ..contracts.decision import AbilityCall, Decision
 from ..contracts.errors import Rejected
 from ..contracts.observation import Observation
 from . import predicates
+from .predicates import PredicateError
 
 #: 参数校验器：返回规范化参数，非法时抛 ``Rejected``
 ParamsValidator = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
@@ -52,10 +55,24 @@ def parse_decision(
     if not isinstance(revision, int) or revision < 0:
         raise DecisionError("goal_revision 必须是非负整数")
 
+    predicate_errors: list[str] = []
     completion = payload.get("completion")
     if completion is not None:
-        completion = predicates.validate(completion)
-    stops = predicates.validate_all(payload.get("stop_conditions"))
+        try:
+            completion = predicates.validate(completion)
+        except PredicateError as exc:
+            # 判据是可选的：模型写错路径不该让整次动作作废（例如引用 last_result.state）。
+            predicate_errors.append("completion: %s" % exc)
+            completion = None
+
+    stops: list[Mapping[str, Any]] = []
+    raw_stops = payload.get("stop_conditions")
+    if raw_stops not in (None, [], ()):
+        try:
+            stops = list(predicates.validate_all(raw_stops))
+        except PredicateError as exc:
+            predicate_errors.append("stop_conditions: %s" % exc)
+            stops = []
 
     call = None
     if ability not in (None, "", "null"):
@@ -82,6 +99,7 @@ def parse_decision(
         goal_revision=revision,
         completion=completion,
         stop_conditions=tuple(stops),
+        predicate_errors=tuple(predicate_errors),
         note=str(payload.get("note") or ""),
         model=model,
         raw=dict(payload),

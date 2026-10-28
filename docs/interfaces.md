@@ -100,8 +100,9 @@
 - `build_messages(context, *, include_completion=False)`、`build_system_prompt(*, include_completion=False)`、
   `SYSTEM_PROMPT`。默认提示词不含 `completion` 字段：完成只由能力的前后观察验证；
   `include_completion=True`（配置 `model_completion_enabled`）才把模型判据纳入结算。
-- `parse_decision(payload, *, observation, validate_params, model)`：非法/未知能力/非法判据
-  抛 `Rejected`；决策绑定“我们给的观察”。
+- `parse_decision(payload, *, observation, validate_params, model)`：非法/未知能力/非法参数
+  抛 `Rejected`（错误上带 `ability`）；`completion` / `stop_conditions` 校验失败只忽略该判据，
+  记入 `Decision.predicate_errors`，动作照常执行。决策绑定“我们给的观察”。
 - `validate(predicate)` / `validate_all` / `evaluate` / `evaluate_all`：只允许
   `== != < <= > >= in not_in exists absent` 与观察字段路径；未知返回 `None`。
 - `check_freshness(decision, based_on, current, *, premises) -> Freshness`。

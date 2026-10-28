@@ -47,6 +47,22 @@ def test_不行动时说明原因():
     assert "选择动作" not in out
 
 
+def test_被忽略的判据会打印原因():
+    out = text(
+        make(
+            "decision_received",
+            ability="move_to",
+            payload={
+                "goal": "走到耕地旁",
+                "params": {"x": 12, "y": 10},
+                "predicate_errors": ["completion: 判据 path 越界：last_result.state"],
+            },
+        )
+    )
+    assert "判据被忽略" in out
+    assert "last_result.state" in out
+
+
 def test_成功失败未知取消四种结果可区分():
     completed = text(make("action_finished_completed", ability="use", payload={"detail": "观察到浇水变化"}))
     failed = text(make("action_finished_failed", ability="use", payload={"detail": "判据未满足"}))

@@ -146,8 +146,10 @@ flowchart LR
    - `goal` 必填；`ability` 为空表示“暂不行动”，必须写 `note`；
    - `params` 必须是对象，并立即通过 `AbilityRegistry.validate_model_params`
      （`abilities/registry.py:60`）→ 隐藏能力（`use`/`select_item`）在这里被拒绝，能力的 `validate` 再查参数；
-   - `completion` / `stop_conditions` 必须通过受限判据校验（`decision/predicates.py:validate`，42）：
+   - `completion` / `stop_conditions` 走受限判据校验（`decision/predicates.py:validate`，42）：
      只允许观察字段路径 + `== != < <= > >= in not_in exists absent` + JSON 字面量；
+     **判据是可选的**：路径越界（如 `last_result.state`）只忽略该判据并记进
+     `Decision.predicate_errors`，不会丢弃整条动作；`decision_received` 与控制台会显示原因。
      `completion` 默认可省略（见第 9 节），`stop_conditions` 仅供参考、不参与结算；
    - 决策**绑定我们给出的那次观察**（`based_on_snapshot_id` / `based_on_sampled_at`），不是模型自称的时间。
 

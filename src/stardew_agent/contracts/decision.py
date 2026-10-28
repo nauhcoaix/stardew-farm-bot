@@ -39,13 +39,15 @@ class Decision:
     goal_revision: int = 0
     completion: Mapping[str, Any] | None = None
     stop_conditions: Sequence[Mapping[str, Any]] = ()
+    #: 模型写了但被忽略的可选判据（路径越界/运算符不支持等），给下一轮反馈用
+    predicate_errors: tuple[str, ...] = ()
     note: str = ""
     model: str = ""
     raw: Mapping[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict:
-        return {
+        row = {
             "schema_version": self.schema_version,
             "goal": self.goal,
             "based_on_sampled_at": self.based_on_sampled_at,
@@ -58,3 +60,6 @@ class Decision:
             "note": self.note,
             "model": self.model,
         }
+        if self.predicate_errors:
+            row["predicate_errors"] = list(self.predicate_errors)
+        return row

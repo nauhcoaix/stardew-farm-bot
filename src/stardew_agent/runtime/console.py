@@ -69,6 +69,9 @@ def format_event(event: Event) -> list[str]:
         else:
             note = _clip(payload.get("note") or "", MAX_DETAIL)
             lines.append(prefix + "暂不行动" + ("：" + note if note else ""))
+        ignored = payload.get("predicate_errors") or []
+        if ignored:
+            lines.append(prefix + "判据被忽略：" + _clip("；".join(str(row) for row in ignored), 160))
         return lines
 
     if kind == "action_started":

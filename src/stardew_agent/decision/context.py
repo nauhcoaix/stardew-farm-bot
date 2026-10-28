@@ -277,6 +277,7 @@ def build_context(
             "ref 的时效：ref 只在单次快照内有效；坐标与 target_id 跨快照稳定",
             "recent_actions：最近几次动作的真实状态（成功/失败/未知/拦截）与原因；"
             "state=blocked 表示执行器没下发，原样重发只会再次被拦",
+            "判据 path 只能引用现场观察根字段；引用 last_result/recent_actions 会被忽略",
             "长期目标文字（用户可修改）",
         ],
     }

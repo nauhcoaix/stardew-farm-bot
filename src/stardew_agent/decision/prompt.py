@@ -33,6 +33,9 @@ BASE_PROMPT = """你在通过一组已注册的能力操作星露谷里的一个
    failed（失败）、unknown（结果未知）、blocked（未下发就被拦）都要看清，
    不要重复同样的动作与参数；state=blocked 表示执行器根本没下发，
    原样重发会被再次拦截：换任务、换目标或先观察；unknown 时先观察核对，再决定是否重试。
+   判据 path 只能引用现场观察的根字段（player/inventory/entities/menu/location/game_time/
+   scope/save_key/session/snapshot_id/source）；写 last_result.state、recent_actions 这类
+   会越界，整条判据会被忽略并告诉你原因。
 6. 没有可做的事时不要空转：先看 observation.entity_counts 与 candidates，
    换目标（探索、交互、钓鱼）或明确把 ability 设为 null 并说明在等什么；
    连续输出 null 只会让循环退避等待，不会让世界变化。

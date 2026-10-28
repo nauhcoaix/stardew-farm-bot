@@ -288,6 +288,7 @@ class AgentLoop:
                     "params": dict(decision.call.params) if decision.call else None,
                     "reason": decision.reason,
                     "completion": dict(decision.completion) if decision.completion else None,
+                    "predicate_errors": list(decision.predicate_errors),
                     "note": decision.note,
                 },
             )

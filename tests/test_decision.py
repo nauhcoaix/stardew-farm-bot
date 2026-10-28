@@ -109,14 +109,25 @@ def test_允许不行动但必须说明目标():
         parse_decision({"ability": None}, observation=observation)
 
 
-def test_非法完成判据被拒绝():
+def test_非法完成判据被忽略但动作保留():
     observation = observe()
-    with pytest.raises(Rejected):
-        parse_decision(
-            {"goal": "x", "ability": "move_to", "params": {"x": 1, "y": 1}, "completion": {"path": "secrets", "op": "==", "value": 1}},
-            observation=observation,
-            validate_params=_validate_params,
-        )
+    decision = parse_decision(
+        {
+            "goal": "x",
+            "ability": "move_to",
+            "params": {"x": 1, "y": 1},
+            "completion": {"path": "secrets", "op": "==", "value": 1},
+        },
+        observation=observation,
+        validate_params=_validate_params,
+    )
+    # 判据是可选的：写错路径不该让动作作废，但必须让调用方看到原因。
+    assert decision.call is not None
+    assert decision.completion is None
+    assert decision.predicate_errors and "越界" in decision.predicate_errors[0]
+    # 判据校验本身仍然是严格的（能力/内部代码使用同一个校验器）。
+    with pytest.raises(PredicateError):
+        validate({"path": "secrets", "op": "==", "value": 1})
 
 
 def test_同一快照不判过期_仅时间变化也不判过期():
@@ -230,6 +241,28 @@ def test_最近动作按上限截断():
         now=200.0,
     )
     assert [row["ability"] for row in context["recent_actions"]] == ["a0", "a1"]
+
+
+def test_非法可选判据被忽略而不是丢弃动作():
+    observation = observe()
+    decision = parse_decision(
+        {
+            "goal": "走到耕地边",
+            "ability": "move_to",
+            "params": {"x": 11, "y": 10},
+            "completion": {"path": "last_result.state", "op": "==", "value": "completed"},
+            "stop_conditions": [{"path": "recent_actions", "op": "exists"}],
+        },
+        observation=observation,
+        validate_params=lambda name, values: dict(values),
+    )
+    assert decision.call is not None
+    assert decision.call.ability == "move_to"
+    assert decision.completion is None
+    assert decision.stop_conditions == ()
+    assert len(decision.predicate_errors) == 2
+    assert "越界" in decision.predicate_errors[0]
+    assert "predicate_errors" in decision.to_dict()
 
 
 def test_参数校验失败时保留能力id便于反馈():
