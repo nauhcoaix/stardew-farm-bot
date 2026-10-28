@@ -142,19 +142,30 @@ public static class MenuDump
         if (qty < 1) qty = 1;
         var item = shop.forSale[index];
         int price = item.salePrice();
-        int cost = price * qty;
-        if (Game1.player.Money < cost)
-            return new { kind = "shopbuy", ok = false, reason = "钱不够", need = cost, money = Game1.player.Money };
+        if (Game1.player.Money < price * qty)
+            return new { kind = "shopbuy", ok = false, reason = "钱不够", need = price * qty, money = Game1.player.Money };
         int added = 0;
         for (int i = 0; i < qty; i++)
         {
             var copy = (Item)item.GetSalableInstance();
-            if (Game1.player.addItemToInventoryBool(copy)) added++;
-            else { Game1.createItemDebris(copy, Game1.player.Position, -1); added++; }
+            if (!HasRoomFor(copy)) break;
+            if (!Game1.player.addItemToInventoryBool(copy)) break;
+            added++;
         }
+        if (added == 0)
+            return new { kind = "shopbuy", ok = false, reason = "背包满了：先 place_chest/ship 清空间再买" };
+        int cost = price * added;
         Game1.player.Money -= cost;
         shop.heldItem = null;
         return new { kind = "shopbuy", ok = true, name = item.DisplayName, qty = added, price, cost, money = Game1.player.Money };
+    }
+
+    static bool HasRoomFor(Item sample)
+    {
+        foreach (var slot in Game1.player.Items) if (slot == null) return true;
+        foreach (var slot in Game1.player.Items)
+            if (slot != null && slot.canStackWith(sample) && slot.Stack < slot.maximumStackSize()) return true;
+        return false;
     }
 
     // 造箱子并放到指定格子（消耗 50 木材）

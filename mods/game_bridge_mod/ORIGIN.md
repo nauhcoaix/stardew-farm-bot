@@ -100,6 +100,7 @@
   （空格或可叠加余量），放不下就返回 `ok=false`，提示先 `place_chest` / `ship`；
 - 观察的 `player` 增加 `freeSlots`，模型能直接看到还剩几格；
 - `PlaceChest` 增加放置校验：只能放在人物 1～2 格内、不能是出口/门/家具/角色/已有物体格；
+- `ShopBuy` 满包时不再把商品丢到地上：买不进背包就拒绝并提示先清空间；扣钱按实际买入数量；
 - 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-inventory`）。
 
