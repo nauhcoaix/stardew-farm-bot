@@ -253,7 +253,10 @@ flowchart LR
 | `task=harvest` | 处理 `harvestable=true` 的地块；用 `interact` 取走作物（**不挥动工具**，否则镰刀会毁掉作物） |
 | `task=plant` | 处理已耕且无作物的地块；必须给 `seed`（名称或物品 id 模糊匹配） |
 | `task=refill` | 处理 `refillable=true` 的水源格；自动切到水壶 |
-| `task=auto` | 按 浇水 → 锄地 → 收获 → 装水 的顺序选第一个有目标的任务 |
+| `task=chop` | 处理 `terrain="Tree"` 的野生树；自动切斧头（果树不列入，避免误砍资产） |
+| `task=clear` | 处理 `terrain ∈ {Weeds, Grass, Bush}` 与 `objName ∈ {Weeds, Twig}` 的杂草/灌木/嫩枝；优先镰刀，嫩枝改切斧头 |
+| `task=mine` | 处理名称含 stone/node/ore/geode/quartz/石/矿/晶 的对象（石头、矿石）；自动切镐 |
+| `task=auto` | 按 浇水 → 锄地 → 收获 → 装水 的顺序选第一个有目标的任务；**不含**砍树/清理/挖矿 |
 | `max_targets` | 1～40，默认 8；达到上限时状态为 `unknown` 并报告剩余数量 |
 | `max_seconds` | 5～120，默认 45；体力为 0、场景变化、步数用尽都会提前如实结束 |
 

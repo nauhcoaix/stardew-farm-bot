@@ -390,6 +390,59 @@ def test_收获用交互而不是挥动工具():
     assert progress.evidence["done"] == [{"tile": {"x": 11, "y": 10}, "task": "harvest"}]
 
 
+def test_砍树会切斧头并用砍伐判据():
+    registry, _move_port, action_port = _routine_registry()
+    spec = registry.get("farm_routine")
+    tree = entity("@s1:e1", "terrain", "Tree", 11, 10, terrain="Tree", passable=False)
+    axe = inventory(3, "斧头", tool="Axe")
+    params = spec.validate({"task": "chop", "max_targets": 2})
+    before = observe(entities=[tree], inventory_rows=[axe], selected_slot=0)
+    picked = observe(entities=[tree], inventory_rows=[axe], selected_slot=3)
+    delegation = spec.start(params, before, "a22")
+
+    progress = None
+    for row in [before, picked, picked, picked, picked, picked]:
+        progress = asyncio.run(delegation.step(row))
+        if progress.done:
+            break
+
+    assert progress is not None and progress.state == "completed"
+    assert ("select", 3) in action_port.calls
+    assert [call for call in action_port.calls if call[0] == "use"] == [("use", "@s1:e1")]
+    assert progress.evidence["done"] == [{"tile": {"x": 11, "y": 10}, "task": "chop"}]
+
+
+def test_清理与挖矿的目标识别和工具前提():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    weeds = entity("@s1:e1", "object", "杂草", 10, 11, objName="Weeds", objType="Object", passable=False)
+    grass = entity("@s1:e2", "terrain", "Grass", 11, 11, terrain="Grass", passable=True)
+    twig = entity("@s1:e4", "object", "嫩枝", 13, 11, objName="Twig", objType="Object", passable=False)
+    stone = entity("@s1:e3", "object", "石头", 12, 11, objName="Stone", objType="Object", passable=False)
+    scythe = inventory(4, "镰刀", tool="MeleeWeapon")
+    axe = inventory(3, "斧头", tool="Axe")
+    pick = inventory(5, "镐", tool="Pickaxe")
+    obs = observe(entities=[weeds, grass, twig, stone], inventory_rows=[scythe, axe, pick])
+
+    clear_checks = spec.check_premises(spec.validate({"task": "clear"}), obs)
+    assert any(check.met is True and "可处理清理目标 3 个" in check.detail for check in clear_checks)
+    mine_checks = spec.check_premises(spec.validate({"task": "mine"}), obs)
+    assert any(check.met is True and "可处理挖矿目标 1 个" in check.detail for check in mine_checks)
+
+
+def test_auto不把砍树清障挖矿算作农活():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    tree = entity("@s1:e1", "terrain", "Tree", 10, 11, terrain="Tree", passable=False)
+    stone = entity("@s1:e2", "object", "石头", 11, 11, objName="Stone", objType="Object", passable=False)
+    axe = inventory(3, "斧头", tool="Axe")
+    pick = inventory(5, "镐", tool="Pickaxe")
+    obs = observe(entities=[tree, stone], inventory_rows=[axe, pick])
+
+    checks = spec.check_premises(spec.validate({"task": "auto"}), obs)
+    assert any(check.met is False and "没有可浇" in check.detail for check in checks)
+
+
 def test_农活前提在没有目标或缺工具时明确失败():
     registry, _move, _action = _routine_registry()
     spec = registry.get("farm_routine")

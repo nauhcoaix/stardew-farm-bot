@@ -20,26 +20,58 @@ from ..contracts.results import Progress
 from ..observation.identity import target_id
 from .base import AbilitySpec, DelegationBase, PremiseCheck, reject_unknown_params, require_int, require_str
 
-#: 例行程序支持的任务；``auto`` 由现场目标决定
-TASKS = ("auto", "water", "till", "harvest", "plant", "refill")
+#: 例行程序支持的任务；``auto`` 只做照料类农活，砍树/清障/挖矿必须显式指定
+TASKS = ("auto", "water", "till", "harvest", "plant", "refill", "chop", "clear", "mine")
 
 #: 每个任务用哪个底层能力。收菜是“把作物拿起来”，必须用 interact：
 #: 桥的 use 只会挥动当前手持工具/种子，用镰刀之类的工具会毁掉作物。
-ABILITY = {"water": "use", "till": "use", "plant": "use", "refill": "use", "harvest": "interact"}
+ABILITY = {
+    "water": "use",
+    "till": "use",
+    "plant": "use",
+    "refill": "use",
+    "harvest": "interact",
+    "chop": "use",
+    "clear": "use",
+    "mine": "use",
+}
 
 #: use 任务对应的预期效果（interact 不需要）
-EXPECT = {"water": "water", "till": "till", "plant": "plant", "refill": "any"}
+EXPECT = {"water": "water", "till": "till", "plant": "plant", "refill": "any", "chop": "chop", "clear": "clear", "mine": "any"}
 
-#: 任务需要的工具（按 inventory 的 tool 字段或名称匹配，全部小写）
+#: 任务需要的工具（按 inventory 的 tool 字段或名称匹配，全部小写；按顺序取第一个匹配）
 TOOL_HINTS = {
     "water": ("wateringcan", "watering can", "水壶", "洒水壶"),
     "refill": ("wateringcan", "watering can", "水壶", "洒水壶"),
     "till": ("hoe", "锄头"),
+    "chop": ("axe", "斧头", "斧"),
+    "mine": ("pickaxe", "镐"),
+    "clear": ("scythe", "镰刀", "axe", "斧头", "hoe", "锄头"),
 }
 
+#: 前提里给模型看的工具名
+TOOL_LABELS = {
+    "water": "水壶",
+    "refill": "水壶",
+    "till": "锄头",
+    "chop": "斧头",
+    "clear": "镰刀（或斧头/锄头）",
+    "mine": "镐",
+}
+
+#: ``auto`` 只挑照料类任务：砍树/清障/挖矿是不可逆的资源决策，必须显式指定
 AUTO_ORDER = ("water", "till", "harvest", "refill")
 DEFAULT_TARGETS = 8
 DEFAULT_SECONDS = 45
+
+#: 石头/矿石对象的名称线索（桥的 name 是显示名，objName 是内部名）
+MINE_HINTS = ("stone", "node", "ore", "geode", "quartz", "石", "矿", "晶")
+
+#: 可被镰刀/斧头清掉的地形（桥的 terrain 字段是类型名）
+CLEAR_TERRAINS = ("Weeds", "Grass", "Bush")
+
+#: 可清理的对象（桥的 objName 是内部名）：杂草用镰刀，嫩枝用斧头
+CLEAR_OBJECTS = ("Weeds", "Twig")
 
 
 def _matches(entity: Mapping[str, Any], task: str) -> bool:
@@ -53,6 +85,18 @@ def _matches(entity: Mapping[str, Any], task: str) -> bool:
         return entity.get("kind") == "soil" and bool(entity.get("tilled")) and not entity.get("crop")
     if task == "refill":
         return entity.get("refillable") is True
+    if task == "chop":
+        # 只砍野生树；果树是资产，不放进自动目标
+        return entity.get("kind") == "terrain" and entity.get("terrain") == "Tree"
+    if task == "clear":
+        if entity.get("kind") == "terrain" and entity.get("terrain") in CLEAR_TERRAINS:
+            return True
+        return entity.get("kind") == "object" and str(entity.get("objName") or "") in CLEAR_OBJECTS
+    if task == "mine":
+        if entity.get("kind") != "object":
+            return False
+        text = " ".join(str(entity.get(key) or "") for key in ("name", "objName")).lower()
+        return any(hint in text for hint in MINE_HINTS)
     return False
 
 
@@ -77,15 +121,18 @@ def _item_text(item: Mapping[str, Any]) -> str:
 
 
 def tool_slot(observation: Observation, task: str) -> int | None:
-    """该任务要用的工具槽位；不需要工具时返回 ``None``。"""
+    """该任务要用的工具槽位；不需要工具时返回 ``None``。
+
+    按 ``TOOL_HINTS`` 的优先级找：例如 ``clear`` 优先镰刀，没有镰刀才用斧头/锄头。
+    """
     hints = TOOL_HINTS.get(task)
     if not hints:
         return None
-    for item in observation.inventory:
-        text = _item_text(item)
-        if any(hint in text for hint in hints):
-            slot = item.get("slot")
-            return int(slot) if isinstance(slot, int) else None
+    for hint in hints:
+        for item in observation.inventory:
+            if hint in _item_text(item):
+                slot = item.get("slot")
+                return int(slot) if isinstance(slot, int) else None
     return None
 
 
@@ -119,6 +166,9 @@ def _task_label(task: str) -> str:
         "harvest": "收获",
         "plant": "播种",
         "refill": "装水",
+        "chop": "砍树",
+        "clear": "清理",
+        "mine": "挖矿",
         "auto": "自动农活",
     }.get(task, task)
 
@@ -177,9 +227,14 @@ class FarmRoutineDelegation(DelegationBase):
                 return str(row["ref"])
         return None
 
-    def _needed_slot(self, observation: Observation) -> int | None:
+    def _needed_slot(self, observation: Observation, target: Mapping[str, Any] | None = None) -> int | None:
         if self.task == "plant":
             return seed_slot(observation, self.seed)
+        if self.task == "clear" and target is not None:
+            # 杂草/灌木用镰刀；嫩枝要用斧头
+            if str(target.get("objName") or "") == "Twig":
+                return tool_slot(observation, "chop")
+            return tool_slot(observation, "clear")
         return tool_slot(observation, self.task)
 
     # ---- 单步推进 ---------------------------------------------------
@@ -268,7 +323,7 @@ class FarmRoutineDelegation(DelegationBase):
 
     # ---- 子委托 -----------------------------------------------------
     def _begin(self, target: Mapping[str, Any], observation: Observation) -> None:
-        slot = self._needed_slot(observation)
+        slot = self._needed_slot(observation, target)
         selected = (observation.player or {}).get("selectedSlot")
         if slot is not None and selected != slot:
             self._start("select_item", {"slot": slot}, target, observation)
@@ -390,9 +445,9 @@ def _premises(params: Mapping[str, Any], observation: Observation) -> list[Premi
     else:
         checks.append(PremiseCheck("game", None, "体力未知"))
 
-    if task in ("water", "refill", "till"):
+    if task in TOOL_LABELS:
         slot = tool_slot(observation, task)
-        label = "水壶" if task in ("water", "refill") else "锄头"
+        label = TOOL_LABELS[task]
         if not observation.inventory:
             checks.append(PremiseCheck("game", None, "背包未知，无法确认是否带%s" % label))
         else:
@@ -423,8 +478,8 @@ def _premises(params: Mapping[str, Any], observation: Observation) -> list[Premi
         else:
             checks.append(PremiseCheck("game", True, "种子在第 %d 格" % slot))
 
-    counts = {row: len(remaining_targets(observation, row)) for row in AUTO_ORDER}
     if task == "auto":
+        counts = {row: len(remaining_targets(observation, row)) for row in AUTO_ORDER}
         if any(counts.values()):
             summary = "，".join("%s %d" % (_task_label(row), value) for row, value in counts.items() if value)
             checks.append(PremiseCheck("game", True, "可处理目标：" + summary))
@@ -433,7 +488,7 @@ def _premises(params: Mapping[str, Any], observation: Observation) -> list[Premi
         else:
             checks.append(PremiseCheck("game", None, "本次观察没有实体列表，无法确认目标"))
     else:
-        count = counts.get(task, 0)
+        count = len(remaining_targets(observation, task))
         if count:
             checks.append(PremiseCheck("game", True, "可处理%s目标 %d 个" % (_task_label(task), count)))
         elif observation.entities:
@@ -448,15 +503,17 @@ def farm_routine_ability(registry: Any, *, clock: Callable[[], float] = time.mon
     descriptor = AbilityDescriptor(
         id="farm_routine",
         version="1.0.0",
-        summary="批量做机械农活：自动选工具、逐个走近并处理当前观察里的目标（浇水/锄地/收获/播种/装水）",
+        summary="批量做机械操作：自动选工具、逐个走近并处理目标（浇水/锄地/收获/播种/装水/砍树/清理/挖矿）",
         params={
-            "task": "water/till/harvest/plant/refill/auto（默认 auto，按现场目标决定）",
+            "task": "water/till/harvest/plant/refill/chop/clear/mine/auto"
+            "（默认 auto：只做浇水、锄地、收获、装水；砍树/清理/挖矿必须显式指定）",
             "max_targets": "本次最多处理几个目标（1～40，默认 8）",
             "max_seconds": "本次最长秒数（5～120，默认 45）",
             "seed": "task=plant 时必填：背包里种子的名称或物品 id（模糊匹配）",
         },
         observation_needs=("entities", "inventory", "player.position", "player.selectedSlot", "player.energy", "menu"),
-        scope="只处理当前观察范围内的目标；不决定种什么、不买卖、不离开当前场景",
+        scope="只处理当前观察范围内的目标；不决定种什么、不买卖、不离开当前场景；"
+        "chop 只砍野生树，clear 只清杂草/灌木，mine 只处理石头与矿石",
         completion="该任务在当前观察范围内已没有剩余目标；达到上限或时长时如实报告剩余与失败",
         limits=("max_targets<=40", "max_seconds<=120", "每次只处理一个目标", "取消立即停止"),
     )

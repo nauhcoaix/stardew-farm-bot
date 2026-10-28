@@ -139,9 +139,10 @@
   `interact_ability(port)`、`menu_ability(port)`、`fish_ability(port, *,
   validate_limits)`、`farm_routine_ability(registry)`、`composite_ability(definition, registry)`。
 - `farm_routine_ability`：任务与上限
-  `{task: auto|water|till|harvest|plant|refill, max_targets, max_seconds, seed}`；
+  `{task: auto|water|till|harvest|plant|refill|chop|clear|mine, max_targets, max_seconds, seed}`；
   内部调用 `select_item`/`move_to`/`use`（收获走 `interact`，不挥动工具），
-  因此这些底层动作默认 `exposed=False`。
+  因此这些底层动作默认 `exposed=False`。`auto` 只做浇水/锄地/收获/装水，
+  砍树、清理、挖矿必须显式指定任务。
 - `PremiseCheck(kind, met, detail)`，`kind ∈ {game, user, budget, advice}`；
   只有 `game/user/budget` 明确为假时才阻止下发。
 
