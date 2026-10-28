@@ -67,6 +67,8 @@ if /i "%CMD%"=="doctor" goto :do_doctor
 if /i "%CMD%"=="export" goto :do_export
 if /i "%CMD%"=="stats"  goto :do_stats
 if /i "%CMD%"=="skills" goto :do_skills
+if /i "%CMD%"=="tell"   goto :do_tell
+if /i "%CMD%"=="inbox"  goto :do_inbox
 if /i "%CMD%"=="help"   goto :help
 if /i "%CMD%"=="-h"     goto :help
 if /i "%CMD%"=="--help" goto :help
@@ -148,6 +150,23 @@ if "%ARGS%"=="" set "ARGS=list"
 set "RC=%ERRORLEVEL%"
 goto :done
 
+REM ---------------- tell: human instruction to the running agent ----
+:do_tell
+call :ensure_config
+if errorlevel 1 goto :fail
+"%PY%" -m stardew_agent tell --config "%CONFIG%" %ARGS%
+set "RC=%ERRORLEVEL%"
+goto :done
+
+REM ---------------- inbox: list or drop instructions ----------------
+:do_inbox
+call :ensure_config
+if errorlevel 1 goto :fail
+if "%ARGS%"=="" set "ARGS=list"
+"%PY%" -m stardew_agent inbox %ARGS% --config "%CONFIG%"
+set "RC=%ERRORLEVEL%"
+goto :done
+
 REM ---------------- help ----------------
 :help
 echo Stardew learning agent
@@ -159,6 +178,8 @@ echo   start-agent.bat doctor          read-only self check
 echo   start-agent.bat export          evidence to data\evidence.json
 echo   start-agent.bat stats           blocked/failed ratios from history
 echo   start-agent.bat skills [list ^| retire ...]
+echo   start-agent.bat tell "text"    send an instruction or suggestion to the agent
+echo   start-agent.bat inbox [list]    list or drop instructions
 echo.
 echo Extra arguments are passed to the CLI:
 echo   start-agent.bat run --seconds 120 --requests 10

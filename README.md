@@ -57,9 +57,9 @@ src/stardew_agent/
   exploration/           # 白名单 7：格网、寻路、前沿与交互候选
   observation/           # 白名单 8：存档/目标身份、状态比较
   repeat_guard/          # 白名单 9：动作限频
-  runtime/               # 预算、单一动作所有权、停止、事件、实时循环
+  runtime/               # 预算、单一动作所有权、停止、事件、人类指令收件箱、实时循环
   decision/              # 上下文、提示词、受限判据、回复校验、计划新鲜度
-  experience/            # 证据库、检索、经验状态、技能版本与晋级
+  experience/            # 证据库、检索、经验状态、学习写入、技能版本与晋级
   abilities/             # 各能力的描述、参数检查、执行与结果验证
   cli/                   # 配置、依赖组装、run/status/stop/doctor/export
 tests/                   # 模块测试；integration/ 跨模块契约场景
@@ -96,6 +96,8 @@ Steam 的"开始游戏"不会加载 Mod。双击 `start-game.bat`：
 | `start-agent.bat export` | 导出脱敏证据到 `data\evidence.json` |
 | `start-agent.bat stats` | 统计历史行动的拦截/失败占比（可加 `--days 7`、`--save-key`） |
 | `start-agent.bat skills` | 列出组合技能版本（可加 `list` / `retire`） |
+| `start-agent.bat tell "…"` | 给正在运行的 Agent 写一条指令/建议 |
+| `start-agent.bat inbox` | 查看或撤销给 Agent 的指令 |
 | `start-agent.bat help` | 用法 |
 
 额外参数会原样传给 CLI，例如限制这次只跑 120 秒、最多 10 次模型请求：
@@ -129,6 +131,7 @@ start-agent.bat skills list
 - `开始执行`：已拿到动作所有权、真正下发前的确认，括号里是它服务的目标；
 - `成功` / `失败` / `结果未知` / `已取消` / `拦截` / `丢弃过期决策`：真实结果，
   `结果未知` 会提醒先观察核对、不要重发同一写操作；
+- `收到用户指令` / `已按用户指令执行`：本轮模型看到了哪些 `tell` 指令、回执了哪些；
 - 动作进行中只在阶段变化时打印一行 `…`，不会刷屏；
 - 不需要额外日志窗口：完整事件同时写进 `data/experience.sqlite3`，可用
   `start-agent.bat export` 导出。
@@ -248,6 +251,43 @@ stardew-agent skills --config config.json retire --id skill:xxx --reason "前提
 - `model.json` 支持 `api_key` / `apiKey`，占位符（`your-key` 等）会被拒绝。
 
 密钥不会进入日志、状态文件或证据导出。
+
+### 给 Agent 下指令 / 建议（运行时也可以）
+
+Agent 运行中，在另一个窗口直接写一条指令；下一轮决策就会带上它：
+
+```powershell
+start-agent.bat tell "先把农舍门口的作物浇了" --priority 8
+start-agent.bat tell "今天别砍树，留着做围栏" --kind constraint --ttl 3600
+start-agent.bat inbox list                     # 看哪些还没做/已做/过期
+start-agent.bat inbox list --all
+start-agent.bat inbox drop --id ins-xxxxxxxx   # 改主意就撤销
+```
+
+- 类型：`instruction`（照做）、`suggestion`（建议）、`constraint`（限制）；
+- `--ttl` 过期秒数（默认 1800），`--priority` 1～9（越大越先给模型看）；
+- 指令文件写在 `data/inbox`（可配 `inbox_dir`）；Agent 只读新指令，回执写 `ack.json`，
+  两个进程不会互相覆盖；
+- 状态 `pending → delivered → done`：展示过但没照做的**下次还会出现**，过期自动作废；
+- 模型要在 `followed_instructions` 里列出照做的 id，做不到必须在 `reason` 说明；
+- 指令是数据，**不能绕过**能力参数校验、前提检查与安全边界。
+
+## 记忆闭环（经验与技能）
+
+一次委托结束（`action_finished_*`）后，运行环境会把真实结果写进经验库：
+
+- 只认 `completed` / `failed` 作为证据；`unknown` / `cancelled` 不写经验；
+- 同一主张（地点 + 能力 + 关键参数，例如“Farm：farm_routine task=water 能完成”）合并证据；
+- 同一存档内 **3 次可区分的真实成功** → `verified`；已验证经验再遇到同一主张的失败 →
+  退回 `candidate`（反例与旧版本都保留，不删历史）；
+- 下一轮决策通过 `recall` 把相关经验放进上下文 `experiences`（`verified` 优先）；
+  模型看到的 `candidate` 只是候选，不能当事实；
+- `farm_routine` 的重复成功会生成**候选技能**；**取消一次该例行程序**会作为停止测试证据，
+  满足“3 次成功 + 1 次取消”才晋级为可复用技能；已验证技能再失败会退回候选；
+- 移动、单步交互不写经验：这些由能力自身与寻路保证，写进来只会变成噪声。
+
+查看闭环结果：`start-agent.bat status` 的 `store.experiences` / `skills`，
+或 `start-agent.bat export` 导出的 `experiences`、`skills`、`instructions`。
 
 ## 模型接入（任意 OpenAI 兼容）
 

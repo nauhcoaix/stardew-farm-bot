@@ -317,17 +317,32 @@ flowchart LR
 
 `Recorder.emit`（`runtime/events.py:34`）把事件同时交给两个 sink（`combine_sinks`，22）：
 
-1. **经验库**：`make_event_sink`（`cli/wiring.py:112`）
-   - `action_finished_*` → `store.record_action`（`experience/store.py:143`）写成不可变证据；
-   - 能力 id 以 `skill:` 开头时，记录 `record_skill_run`（414）：
-     - 成功 → `promote_skill`（492，需 3 次可区分成功 + 取消测试）；
-     - 满足前提仍失败 → `demote_skill`（523）退回候选；
-     - 完成判据被证伪（误报完成）→ `retire_skill`（512）立即停用。
-2. **控制台**：`ConsoleReporter`（`runtime/console.py:165`）→ `format_event`（49）打印
-   `目标 / 计划动作 / 开始执行 / 进度 / 成功|失败|结果未知|已取消 / 重新绑定 / 汇总`。
+1. **经验库**：`make_event_sink`（`cli/wiring.py`）
+   - `action_finished_*` → `store.record_action` 写成不可变证据；
+   - 同一事件 → `experience.learning.learn_action`：
+     - 只学 `completed` / `failed`；按“地点 + 能力 + 任务”合并证据；
+     - 同存档 3 次可区分成功 → `verified`；已验证经验遇到反例 → 退回 `candidate`；
+     - `farm_routine` 的重复成功生成候选技能；取消该例行程序会作为停止测试证据参与晋级；
+   - 能力 id 以 `skill:` 开头时，记录 `record_skill_run`：
+     - 成功 → `promote_skill`（需 3 次可区分成功 + 取消测试）；
+     - 满足前提仍失败 → `demote_skill` 退回候选；
+     - 完成判据被证伪（误报完成）→ `retire_skill` 立即停用。
+2. **控制台**：`ConsoleReporter`（`runtime/console.py`）→ `format_event` 打印
+   `目标 / 计划动作 / 开始执行 / 进度 / 成功|失败|结果未知|已取消 / 重新绑定 / 用户指令 / 汇总`。
    打印异常会自我停用，不影响运行。
 
-经验检索在下一轮 `store.recall` 生效：机制经验跨存档但必须已验证，存档事实按 `save_key` 隔离。
+经验检索在下一轮 `store.recall` 生效：存档经验按 `save_key` 隔离，已验证的机制经验可跨存档，
+但仍要检查前提。移动/单步交互不写经验（由能力与寻路保证）。
+
+### 人类指令（收件箱）
+
+`runtime/inbox.HumanInbox` 用目录存放指令（`data/inbox`）：
+
+- CLI `tell` 创建 `ins-*.json`；运行进程只读这些文件，把 `delivered/done` 写进 `ack.json`，
+  两个进程不互相覆盖；
+- 决策前 `pending()` 取未完成指令（含“已展示但没照做”的），写进上下文 `instructions`；
+- 模型用 `followed_instructions` 回执，`inbox.follow` 把对应指令标记为 `done`；
+- 指令有 TTL，过期自动作废；撤销用 `inbox drop`；指令不能绕过能力参数与安全边界。
 
 ### 行动统计口径
 

@@ -28,5 +28,6 @@
   "max_context_entities": 120,
 
   "state_path": "data/state.json",
-  "stop_path": "data/stop.json"
+  "stop_path": "data/stop.json",
+  "inbox_dir": "data/inbox"
 }

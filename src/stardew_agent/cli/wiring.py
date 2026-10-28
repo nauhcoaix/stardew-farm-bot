@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -42,7 +43,7 @@ from ..contracts.observation import Observation
 from ..contracts.results import ActionResult
 from ..decision import ContextLimits, build_context, build_messages, parse_decision
 from ..embeddings import Encoder
-from ..experience import ExperienceStore, handle_failure
+from ..experience import ExperienceStore, handle_failure, learn_action, record_skill_feedback
 from ..fishing_client import read_status, send as fish_send
 from ..model_client import ChatClient, default_config_paths, load_settings
 from ..observation import from_snapshot, observed_tiles, position_of
@@ -53,6 +54,7 @@ from ..runtime import (
     ActionOwnership,
     AgentLoop,
     ConsoleReporter,
+    HumanInbox,
     Recorder,
     RunBudget,
     StopFile,
@@ -166,8 +168,10 @@ def build_registry(
     return registry
 
 
-def make_event_sink(store: ExperienceStore) -> Callable[[Event], None]:
-    """事件落库；动作结束事件同时生成证据与技能运行记录。"""
+def make_event_sink(
+    store: ExperienceStore, *, ability_versions: Mapping[str, str] | None = None
+) -> Callable[[Event], None]:
+    """事件落库；动作结束事件同时生成证据、经验与技能运行记录。"""
 
     def sink(event: Event) -> None:
         store.append_event(event)
@@ -177,7 +181,51 @@ def make_event_sink(store: ExperienceStore) -> Callable[[Event], None]:
         raw_result = payload.get("result")
         result_payload = raw_result if isinstance(raw_result, Mapping) else payload
         result = result_from_payload(result_payload)
-        store.record_action(result, save_key=event.save_key, session=event.session, goal=str(payload.get("goal") or ""))
+        action_event_id = store.record_action(
+            result, save_key=event.save_key, session=event.session, goal=str(payload.get("goal") or "")
+        )
+        try:
+            learned = learn_action(
+                store,
+                event_id=action_event_id,
+                save_key=event.save_key,
+                location=str(payload.get("location") or ""),
+                ability=str(result.ability),
+                state=result.state,
+                params=result.params,
+                ability_versions=ability_versions,
+            )
+            if learned.get("learned"):
+                # 学习记录单独落一条事件，便于导出时解释“这条经验从哪来”。
+                store.append_event(
+                    Event(
+                        id="ev:" + uuid.uuid4().hex,
+                        kind="experience_learned",
+                        recorded_at=store.clock(),
+                        save_key=event.save_key,
+                        session=event.session,
+                        ability=result.ability,
+                        status=str(learned.get("status") or ""),
+                        source="executor",
+                        confidence="execution",
+                        payload=learned,
+                    )
+                )
+        except Exception:  # noqa: BLE001 - 学习失败不能影响动作结算
+            pass
+        if result.ability == "farm_routine" and result.state in ("cancelled", "failed"):
+            task = str((result.params or {}).get("task") or "")
+            if task:
+                try:
+                    record_skill_feedback(
+                        store,
+                        location=str(payload.get("location") or ""),
+                        task=task,
+                        event_id=action_event_id,
+                        state=result.state,
+                    )
+                except Exception:  # noqa: BLE001 - 技能反馈失败不能影响动作结算
+                    pass
         ability = str(result.ability)
         if ability.startswith("skill:"):
             version = store.latest_skill_version(ability)
@@ -230,6 +278,9 @@ def make_decider(
     budget: RunBudget,
     config: AgentConfig,
     state: dict,
+    *,
+    inbox: HumanInbox | None = None,
+    recorder: Recorder | None = None,
 ) -> Callable[[Observation, ActionResult | None, Sequence[Mapping[str, Any]]], Awaitable[Decision | None]]:
     """组装一次模型决策：检索经验 → 组装上下文 → 请求 → 解析校验。"""
 
@@ -247,6 +298,21 @@ def make_decider(
             max_entities=config.max_context_entities,
             max_notable_entities=config.max_notable_entities,
         )
+        instruction_rows = inbox.pending(limit=limits.max_instructions) if inbox is not None else []
+        shown_ids = [str(row["id"]) for row in instruction_rows]
+        if shown_ids and inbox is not None:
+            inbox.deliver(shown_ids)
+            if recorder is not None:
+                recorder.emit(
+                    "instructions_delivered",
+                    payload={
+                        "ids": shown_ids,
+                        "items": [
+                            {"id": row["id"], "kind": row["kind"], "text": row["text"]}
+                            for row in instruction_rows
+                        ],
+                    },
+                )
         recent = list(recent_results)
         if not recent and observation.save_key:
             # 重启后内存历史为空：从证据库补读，让模型仍能看到之前的失败。
@@ -258,6 +324,7 @@ def make_decider(
             abilities=registry.descriptors(),
             candidates=build_candidates(observation, store),
             experiences=experiences,
+            instructions=instruction_rows,
             last_result=last_result.to_dict() if last_result else None,
             recent_results=recent,
             budget=budget.snapshot(),
@@ -279,6 +346,16 @@ def make_decider(
         )
         state["goal"] = decision.goal
         state["goal_revision"] = decision.goal_revision
+        followed = reply.parsed.get("followed_instructions") if isinstance(reply.parsed, Mapping) else None
+        if isinstance(followed, (list, tuple)) and shown_ids and inbox is not None:
+            chosen = [str(value) for value in followed if str(value) in shown_ids]
+            if chosen:
+                inbox.follow(chosen, note=(decision.note or decision.reason or ""))
+                if recorder is not None:
+                    recorder.emit(
+                        "instructions_followed",
+                        payload={"ids": chosen, "note": decision.note},
+                    )
         return decision
 
     return decide
@@ -309,6 +386,7 @@ class Runtime:
     loop: AgentLoop
     recorder: Recorder
     budget: RunBudget
+    inbox: HumanInbox
     bridge: Bridge | None = None
     model: ChatClient | None = None
     guard: RepeatGuard | None = None
@@ -387,13 +465,17 @@ async def build_runtime(
     )
     recorder = Recorder(
         sink=combine_sinks(
-            make_event_sink(store),
+            make_event_sink(
+                store,
+                ability_versions={descriptor.id: descriptor.version for descriptor in registry.all_descriptors()},
+            ),
             ConsoleReporter(enabled=config.console_output if console is None else bool(console)),
         )
     )
     observer = observe or make_observer(bridge, config, store)
     state: dict = {"goal": "", "goal_revision": 0, "save_key": ""}
-    decider = make_decider(model, registry, store, budget, config, state)
+    inbox = HumanInbox(config.inbox_dir)
+    decider = make_decider(model, registry, store, budget, config, state, inbox=inbox, recorder=recorder)
     loop = AgentLoop(
         observe=observer,
         request_decision=decider,
@@ -417,6 +499,7 @@ async def build_runtime(
         loop=loop,
         recorder=recorder,
         budget=budget,
+        inbox=inbox,
         bridge=bridge if isinstance(bridge, Bridge) else None,
         model=model,
         guard=guard,
@@ -468,6 +551,7 @@ async def run_agent(
             "guard": runtime.guard.snapshot() if runtime.guard else None,
             "config": config.public(),
             "store": runtime.store.summary(),
+            "inbox": runtime.inbox.summary(),
             "abilities": [descriptor.id for descriptor in runtime.registry.descriptors()],
             "hidden_abilities": [
                 descriptor.id
@@ -507,6 +591,7 @@ def status_report(config: AgentConfig) -> dict:
         "store": store_summary,
         "actions": actions,
         "skills": skills,
+        "inbox": HumanInbox(config.inbox_dir).summary(),
         "stop_requested": StopFile(config.stop_path).reason(),
     }
 
@@ -520,6 +605,7 @@ def export_evidence(config: AgentConfig, out_path: str | Path, *, event_limit: i
     if not Path(config.experience_db).exists():
         raise FileNotFoundError("经验库不存在：%s" % config.experience_db)
     store = ExperienceStore(config.experience_db)
+    inbox = HumanInbox(config.inbox_dir)
     try:
         payload = {
             "exported_at": __import__("time").time(),
@@ -527,6 +613,7 @@ def export_evidence(config: AgentConfig, out_path: str | Path, *, event_limit: i
             "events": store.all_events(limit=event_limit),
             "experiences": store.list_experiences(),
             "skills": store.list_skills(),
+            "instructions": inbox.messages(),
         }
     finally:
         store.close()
@@ -536,6 +623,7 @@ def export_evidence(config: AgentConfig, out_path: str | Path, *, event_limit: i
         "events": len(payload["events"]),
         "experiences": len(payload["experiences"]),
         "skills": len(payload["skills"]),
+        "instructions": len(payload["instructions"]),
     }
 
 

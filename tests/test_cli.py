@@ -342,3 +342,42 @@ def test_stats命令在没有经验库时也能输出(tmp_path: Path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["attempts"] == 0
     assert "经验库" in payload["reason"]
+
+
+def test_收件箱路径相对配置文件解析(tmp_path: Path):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps(dict(REQUIRED, inbox_dir="data/inbox")), encoding="utf-8")
+    assert load_config(config_file).inbox_dir == tmp_path / "data" / "inbox"
+
+
+def test_tell写入指令并能列出(tmp_path: Path, capsys):
+    inbox = tmp_path / "inbox"
+    code = main(["tell", "先给作物浇水", "--inbox", str(inbox), "--priority", "7"])
+    assert code == 0
+    sent = json.loads(capsys.readouterr().out)["sent"]
+    assert sent["text"] == "先给作物浇水"
+    assert sent["priority"] == 7
+    assert sent["kind"] == "instruction"
+
+    code = main(["inbox", "list", "--inbox", str(inbox)])
+    assert code == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["id"] == sent["id"]
+    assert rows[0]["status"] == "pending"
+
+
+def test_inbox_drop撤销指令(tmp_path: Path, capsys):
+    from stardew_agent.runtime import HumanInbox
+
+    inbox = tmp_path / "inbox"
+    row = HumanInbox(inbox).send("别去矿洞", kind="constraint")
+
+    code = main(["inbox", "drop", "--id", row["id"], "--inbox", str(inbox)])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed"] is True
+
+    code = main(["inbox", "list", "--inbox", str(inbox)])
+    assert code == 0
+    assert json.loads(capsys.readouterr().out) == []
+

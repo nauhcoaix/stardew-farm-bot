@@ -189,6 +189,26 @@ def format_event(event: Event) -> list[str]:
             )
         ]
 
+    if kind == "instructions_delivered":
+        items = list(payload.get("items") or [])
+        if not items:
+            return []
+        lines = [prefix + "收到用户指令 %d 条：" % len(items)]
+        for row in items[:4]:
+            lines.append(
+                prefix
+                + "  · [%s] %s（%s）"
+                % (
+                    _clip(row.get("kind") or "instruction", 20),
+                    _clip(row.get("text") or "", 100),
+                    row.get("id") or "",
+                )
+            )
+        return lines
+    if kind == "instructions_followed":
+        ids = list(payload.get("ids") or [])
+        return [prefix + "已按用户指令执行：" + _clip(", ".join(str(value) for value in ids), 120)] if ids else []
+
     return []
 
 

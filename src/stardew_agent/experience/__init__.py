@@ -13,20 +13,34 @@ from .skills import (
     build_skill,
     validate_skill,
 )
+from .learning import (
+    LEARNABLE_ABILITIES,
+    VERIFY_SUCCESSES,
+    claim_for,
+    derived_skill_id,
+    learn_action,
+    record_skill_feedback,
+)
 from .store import ExperienceStore, grams
 from .verdict import DEFAULT_REQUIRED_SUCCESSES, PromotionDecision, evaluate_promotion, handle_failure
 
 __all__ = [
     "DEFAULT_REQUIRED_SUCCESSES",
     "ExperienceStore",
+    "LEARNABLE_ABILITIES",
     "MAX_SECONDS",
     "MAX_STEPS",
     "MAX_STEP_LIMIT",
     "PromotionDecision",
     "SkillDefinitionError",
+    "VERIFY_SUCCESSES",
     "build_skill",
+    "claim_for",
+    "derived_skill_id",
     "evaluate_promotion",
     "grams",
     "handle_failure",
+    "learn_action",
+    "record_skill_feedback",
     "validate_skill",
 ]

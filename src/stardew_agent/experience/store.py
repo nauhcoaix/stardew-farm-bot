@@ -423,6 +423,23 @@ class ExperienceStore:
         return max(0.0, cosine(query, [from_blob(row["blob"])])[0])
 
     # ---- 组合技能 -------------------------------------------------
+    def experience_by_claim(self, claim: str, *, scope_save: str) -> dict | None:
+        """按“主张 + 存档”找已有经验（用于同一动作的重复证据合并）。"""
+        row = self.db.execute(
+            "SELECT * FROM experiences WHERE claim=? AND scope='save' AND save_key=? "
+            "ORDER BY updated_ts DESC LIMIT 1",
+            (str(claim), str(scope_save)),
+        ).fetchone()
+        return self._experience_row(row) if row else None
+
+    def experience_evidence_ids(self, experience_id: str, *, role: str = "support") -> list[str]:
+        """取某条经验的支持/反例事件 id（技能运行记录需要真实事件）。"""
+        rows = self.db.execute(
+            "SELECT event_id FROM experience_evidence WHERE experience_id=? AND role=? ORDER BY rowid",
+            (experience_id, role),
+        ).fetchall()
+        return [str(row["event_id"]) for row in rows]
+
     def add_skill(
         self,
         definition: Mapping[str, Any],

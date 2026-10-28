@@ -316,3 +316,140 @@ def test_最近动作可从证据库补读(store):
     assert rows[0]["goal"] == "浇水"
     assert rows[0]["params"] == {"target": "@s1:e1"}
     assert store.recent_actions(SAVE_B) == []
+
+
+def _learn(store, event_id: str, *, state="completed", ability="farm_routine", params=None, location="Farm"):
+    from stardew_agent.experience import learn_action
+
+    return learn_action(
+        store,
+        event_id=event_id,
+        save_key=SAVE_A,
+        location=location,
+        ability=ability,
+        state=state,
+        params=params if params is not None else {"task": "water"},
+        ability_versions={"farm_routine": "1.0.0"},
+    )
+
+
+def test_动作结果写入候选经验并合并证据(store):
+    first = _learn(store, "ev:a1")
+    assert first["learned"] is True and first["created"] is True
+    assert first["status"] == "candidate"
+    assert first["support"] == 1
+
+    second = _learn(store, "ev:a2")
+    assert second["experience_id"] == first["experience_id"]
+    assert second["support"] == 2 and second["created"] is False
+    assert store.summary()["experiences"]["candidate"] == 1
+
+    third = _learn(store, "ev:a3")
+    assert third["support"] == 3
+    assert third["upgraded"] is True
+    stored = store.list_experiences(save_key=SAVE_A)
+    assert len(stored) == 1 and stored[0]["status"] == "verified"
+
+
+def test_已验证经验遇到反例退回候选(store):
+    for index in range(3):
+        _learn(store, "ev:s%d" % index)
+    assert store.list_experiences(save_key=SAVE_A)[0]["status"] == "verified"
+
+    failed = _learn(store, "ev:f1", state="failed")
+    assert failed["experience_id"]
+    assert failed["demoted"] is True
+    assert failed["status"] == "candidate"
+    assert failed["counter"] == 1
+
+
+def test_未知结果不写经验(store):
+    skipped = _learn(store, "ev:u1", state="unknown")
+    assert skipped["learned"] is False
+    assert store.summary()["experiences"] == {}
+
+
+def test_重复成功的农活生成候选技能(store):
+    for index in range(3):
+        _learn(store, "ev:w%d" % index)
+    skills = store.list_skills()
+    assert skills, "三次真实成功后应登记候选技能"
+    assert skills[0]["status"] == "candidate"
+    assert skills[0]["definition"]["steps"][0]["ability"] == "farm_routine"
+    assert skills[0]["definition"]["steps"][0]["params"]["task"] == "water"
+
+
+def test_不学习移动这类局部动作(store):
+    skipped = _learn(store, "ev:m1", ability="move_to", params={"x": 1, "y": 2})
+    assert skipped["learned"] is False
+    assert store.summary()["experiences"] == {}
+
+
+
+def test_动作结束事件会写入经验(tmp_path: Path):
+    from stardew_agent.cli.wiring import make_event_sink
+
+    store = ExperienceStore(tmp_path / "wired.sqlite3", clock=lambda: 1000.0)
+    try:
+        sink = make_event_sink(store, ability_versions={"farm_routine": "1.0.0"})
+        completed = ActionResult(
+            action_id="a1",
+            ability="farm_routine",
+            params={"task": "water"},
+            state="completed",
+            detail="完成",
+            progress=True,
+        )
+        sink(
+            Event(
+                id="ev:finished",
+                kind="action_finished_completed",
+                recorded_at=1000.0,
+                save_key=SAVE_A,
+                ability="farm_routine",
+                status="completed",
+                payload={"result": completed.to_dict(), "goal": "浇水", "location": "Farm"},
+            )
+        )
+        assert store.summary()["experiences"]["candidate"] == 1
+        assert store.list_experiences(save_key=SAVE_A)[0]["claim"].startswith("Farm")
+    finally:
+        store.close()
+
+
+
+def test_取消测试通过后派生技能晋级(tmp_path: Path):
+    from stardew_agent.cli.wiring import make_event_sink
+
+    store = ExperienceStore(tmp_path / "skill.sqlite3", clock=lambda: 1000.0)
+    try:
+        sink = make_event_sink(store, ability_versions={"farm_routine": "1.0.0"})
+
+        def emit(index: int, state: str) -> None:
+            result = ActionResult(
+                action_id="a%d" % index,
+                ability="farm_routine",
+                params={"task": "water"},
+                state=state,
+            )
+            sink(
+                Event(
+                    id="ev:%d" % index,
+                    kind="action_finished_" + state,
+                    recorded_at=1000.0,
+                    save_key=SAVE_A,
+                    ability="farm_routine",
+                    status=state,
+                    payload={"result": result.to_dict(), "goal": "浇水", "location": "Farm"},
+                )
+            )
+
+        for index in range(3):
+            emit(index, "completed")
+        assert store.list_skills()[0]["status"] == "candidate"
+
+        emit(9, "cancelled")
+        assert store.list_skills()[0]["status"] == "verified"
+    finally:
+        store.close()
+

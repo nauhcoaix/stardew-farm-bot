@@ -331,3 +331,24 @@ def test_开启开关后提示词才出现完成判据():
     system = build_messages({"player": {}}, include_completion=True)[0]["content"]
     assert "completion" in system
     assert "判据不成立时该次动作会被判为失败" in system
+
+
+def test_上下文包含人类指令并限制条数():
+    observation = observe(x=10, y=10)
+    rows = [
+        {"id": "ins-1", "kind": "instruction", "text": "先给作物浇水", "priority": 7, "age_seconds": 3.0},
+        {"id": "ins-2", "kind": "constraint", "text": "不要砍树", "priority": 4, "age_seconds": 8.0},
+    ]
+    context = build_context(
+        observation=observation, instructions=rows, limits=ContextLimits(max_instructions=1)
+    )
+    assert [row["id"] for row in context["instructions"]] == ["ins-1"]
+    assert context["instructions"][0]["text"] == "先给作物浇水"
+    assert any("instructions" in line for line in context["provided_knowledge"])
+
+
+def test_提示词要求回执用户指令():
+    system = build_messages({})[0]["content"]
+    assert "followed_instructions" in system
+    assert "instructions 是用户直接给你的指令或建议" in system
+

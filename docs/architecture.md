@@ -41,14 +41,16 @@ cli.run_agent
   └─ AgentLoop.run
        ├─ observe：桥快照 → Observation，并把地形写入该存档的地图索引
        ├─ request_decision（委托结算后发起，最多一个在途请求）
+       │    ├─ 读取人类指令收件箱 → 上下文 instructions（并写 delivered 回执）
        │    ├─ 检索经验（本存档事实 + 已验证机制）
        │    ├─ build_context（截断必须报告）→ 模型 → parse_decision
+       │    ├─ followed_instructions → inbox.follow（done）
        │    └─ 计数模型请求与 tokens
        ├─ 执行前新鲜度检查：场景/菜单/关键前提/绑定观察
        ├─ 限频检查（动作键 = 能力 + 规范参数）
        ├─ 取得动作所有权 → 启动委托 → 分段 step
        │    └─ 每步之后重新观察；完成判据只能否决成功，不能升级失败
-       ├─ 结算：ActionResult + 事件（证据落库）
+       ├─ 结算：ActionResult + 事件（证据落库 → 经验/技能更新）
        └─ 停止/预算用尽：取消在途委托、释放所有权、输出已发生的结果
 ```
 
@@ -67,6 +69,8 @@ cli.run_agent
 | 上下文按预算压缩 | `decision/context.py`：地块→通行网格，实体只留非默认字段，候选去重 |
 | 限频不把“有进展的续跑”算成新动作 | 只有新委托下发时 `RepeatGuard.record` |
 | 经验状态不会被相似度或模型自信提升 | `experience/store.py`（显式状态变更 + 晋级判据；`status=verified` 必须带证据） |
+| 经验只由真实执行写入/升级 | `experience/learning.py`：只学 completed/failed，3 次可区分成功才 verified，反例退回 candidate |
+| 人类指令不能绕过校验 | 指令只是上下文数据；能力参数、前提、限频、所有权仍照常检查 |
 | 存档事实不跨存档 | 所有索引表带 `save_key`；`scope='save'` 的经验必须带存档 |
 | 换存档不继承动作历史 | `loop._note_context`：清空 `recent_actions`/`last_result` 并记 `context_switched`；`make_decider` 归零短期目标 |
 | 一次逻辑委托只有一个动作 ID | 能力把 `delegation.action_id` 传给 `actionId`（`navigation`/`interaction`），桥按连接串行 |
@@ -78,7 +82,8 @@ cli.run_agent
 | 当前观察 | `runtime`（每次重新观察，不缓存旧现场） |
 | 动作所有权/租约 | `runtime/ActionOwnership` |
 | 预算账本 | `runtime/RunBudget` |
-| 事件与经验/技能版本/地图索引 | `experience/ExperienceStore` |
+| 事件与经验/技能版本/地图索引 | `experience/ExperienceStore`（写入端：`experience/learning.py`） |
+| 人类指令与回执 | `runtime/HumanInbox`（CLI 只创建指令文件；运行进程只写 `ack.json`） |
 | 连接句柄 | `bridge_client.Bridge`、`fishing_client` 的文件邮箱 |
 | 决策新鲜度 | `runtime` 持有“决策依据的观察”，`decision` 只做比较 |
 
@@ -89,5 +94,8 @@ cli.run_agent
 - 只有当前观察范围的地图 → 跨地区只能依赖已记录连接；无全局地图。
 - 购买、制造、箱子等扩展写操作没有统一动作 ID 保障 → 暂不暴露为默认能力。
 - 组合技能首版不支持参数占位、条件分支嵌套与动态预算。
+- 经验粒度只到“地点 + 能力 + 关键参数”（例如 `farm_routine task=water`），还没有参数级/时段前提；
+  派生技能需要一次真实取消作为停止测试，否则停在候选（不会自动晋级）。
+- 人类指令在**下一轮决策**生效，不会打断正在执行的动作；指令过期后不会补做。
 
 这些缺口必须在文档和上下文中如实呈现，不能用提示词包装成“已支持”。

@@ -7,6 +7,7 @@
 from .budget import RunBudget
 from .console import ConsoleReporter, format_event
 from .events import EventSink, Recorder, combine_sinks
+from .inbox import KINDS, HumanInbox
 from .loop import AgentLoop, DecisionRequester, DelegationFactory, LoopSummary, default_action_key, default_context_key
 from .ownership import ActionOwnership, Lease
 from .stop import StopFile, StopSignal, StopSource
@@ -18,6 +19,8 @@ __all__ = [
     "DecisionRequester",
     "DelegationFactory",
     "EventSink",
+    "HumanInbox",
+    "KINDS",
     "Lease",
     "LoopSummary",
     "Recorder",

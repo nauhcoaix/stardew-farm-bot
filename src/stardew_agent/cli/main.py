@@ -23,7 +23,7 @@ from typing import Any, Sequence
 
 from ..contracts.errors import AgentError, ConfigError
 from ..experience import ExperienceStore
-from ..runtime import StopFile
+from ..runtime import HumanInbox, StopFile
 from . import wiring
 from .config import AgentConfig, load_config
 
@@ -33,6 +33,9 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", help="经验库路径")
     parser.add_argument("--state", help="状态文件路径")
     parser.add_argument("--stop-file", help="停止文件路径")
+    parser.add_argument(
+        "--inbox", type=Path, default=argparse.SUPPRESS, help="人类指令收件箱目录（默认 data/inbox）"
+    )
 
 
 def _add_budget(parser: argparse.ArgumentParser) -> None:
@@ -119,6 +122,29 @@ def build_parser() -> argparse.ArgumentParser:
     retire.add_argument("--id", required=True)
     retire.add_argument("--version", type=int)
     retire.add_argument("--reason", required=True)
+
+    tell = sub.add_parser("tell", help="给正在运行的 Agent 写一条指令或建议")
+    _add_common(tell)
+    tell.add_argument("text", help="指令内容（最多 500 字）")
+    tell.add_argument(
+        "--kind",
+        choices=("instruction", "suggestion", "constraint"),
+        default="instruction",
+        help="instruction=照做；suggestion=建议；constraint=限制",
+    )
+    tell.add_argument("--ttl", type=int, default=1800, help="有效期秒数（30～86400，默认 1800）")
+    tell.add_argument("--priority", type=int, default=5, help="1～9，越大越优先给模型看")
+
+    inbox = sub.add_parser("inbox", help="查看或撤销给 Agent 的指令")
+    _add_common(inbox)
+    inbox_sub = inbox.add_subparsers(dest="action", required=True)
+    inbox_list = inbox_sub.add_parser("list", help="列出指令与状态（默认只看未完成）")
+    _add_common(inbox_list)
+    inbox_list.add_argument("--all", action="store_true", help="连已处理/过期的一起列出")
+    inbox_drop = inbox_sub.add_parser("drop", help="撤销一条还没处理的指令")
+    _add_common(inbox_drop)
+    inbox_drop.add_argument("--id", required=True)
+    inbox_drop.add_argument("--note", default="", help="撤销原因")
     return parser
 
 
@@ -149,6 +175,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "embedding_dir": getattr(args, "embedding_dir", None),
         "state_path": getattr(args, "state", None),
         "stop_path": getattr(args, "stop_file", None),
+        "inbox_dir": getattr(args, "inbox", None),
         "game_path": getattr(args, "game_path", None),
         "console_output": False if getattr(args, "quiet", False) else None,
     }
@@ -158,6 +185,25 @@ def _config(args: argparse.Namespace) -> AgentConfig:
     return load_config(getattr(args, "config", None), overrides=_overrides(args))
 
 
+def _inbox(args: argparse.Namespace) -> HumanInbox:
+    """tell/inbox 只需要收件箱目录：优先命令行，其次配置文件里的相对路径。"""
+    explicit = getattr(args, "inbox", None)
+    if explicit is not None:
+        return HumanInbox(explicit)
+    config_path = getattr(args, "config", None)
+    if config_path:
+        try:
+            data = json.loads(Path(config_path).read_text(encoding="utf-8-sig"))
+            value = data.get("inbox_dir") if isinstance(data, dict) else None
+            if value:
+                path = Path(str(value))
+                base = Path(config_path).resolve().parent
+                return HumanInbox(path if path.is_absolute() else base / path)
+        except (OSError, ValueError):
+            pass
+    return HumanInbox(Path("data/inbox"))
+
+
 def _print(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -165,6 +211,19 @@ def _print(payload: Any) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "tell":
+            record = _inbox(args).send(
+                args.text, kind=args.kind, ttl_seconds=args.ttl, priority=args.priority
+            )
+            _print({"sent": record, "hint": "Agent 下一轮决策会看到这条指令；用 inbox list 查看状态"})
+            return 0
+        if args.command == "inbox":
+            box = _inbox(args)
+            if args.action == "drop":
+                _print({"dropped": args.id, "changed": box.drop(args.id, note=args.note)})
+                return 0
+            _print(box.messages(include_finished=bool(getattr(args, "all", False))))
+            return 0
         config = _config(args)
         if args.command == "run":
             payload = asyncio.run(

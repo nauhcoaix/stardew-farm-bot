@@ -617,7 +617,7 @@ class AgentLoop:
             "action_finished_" + state,
             ability=result.ability,
             status=state,
-            payload=dict(result.to_dict(), goal=self._active_goal),
+            payload=dict(result.to_dict(), goal=self._active_goal, location=after.location),
         )
 
     def _count_result(self, state: str) -> None:
@@ -673,7 +673,11 @@ class AgentLoop:
             "action_finished_cancelled",
             ability=result.ability,
             status="cancelled",
-            payload=dict(result.to_dict(), goal=self._active_goal),
+            payload=dict(
+                result.to_dict(),
+                goal=self._active_goal,
+                location=self._active_before.location if self._active_before else "",
+            ),
         )
 
     async def _shutdown(self) -> None:

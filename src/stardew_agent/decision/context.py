@@ -56,6 +56,8 @@ class ContextLimits:
     max_experiences: int = 8
     max_menu_options: int = 12
     max_recent_actions: int = 6
+    #: 人类指令最多给几条（按优先级取；指令文字会截断）
+    max_instructions: int = 4
     #: 地块压成网格 + 实体只留非默认字段（关掉可回到旧的全量行为，便于对比）
     compact_entities: bool = True
     #: 压缩模式下最多列出多少个非地块实体
@@ -283,12 +285,27 @@ def _compact_candidates(candidates: Mapping[str, Any]) -> dict:
     return out
 
 
+def _compact_instruction(row: Mapping[str, Any]) -> dict:
+    """人类指令只给模型 id/类型/正文/年龄，不带文件路径等内部字段。"""
+    text = str(row.get("text") or "").replace("\n", " ").strip()
+    if len(text) > 240:
+        text = text[:239] + "…"
+    return {
+        "id": row.get("id"),
+        "kind": row.get("kind") or "instruction",
+        "text": text,
+        "priority": row.get("priority"),
+        "age_seconds": row.get("age_seconds"),
+    }
+
+
 def build_context(
     *,
     observation: Observation,
     abilities: Sequence[AbilityDescriptor] = (),
     candidates: Mapping[str, Any] | None = None,
     experiences: Iterable[Mapping[str, Any]] = (),
+    instructions: Iterable[Mapping[str, Any]] = (),
     last_result: Mapping[str, Any] | None = None,
     recent_results: Iterable[Mapping[str, Any]] = (),
     budget: Mapping[str, Any] | None = None,
@@ -302,6 +319,7 @@ def build_context(
     entities, entity_trim, tiles, counts = _trim_entities(observation, limits)
     inventory = [dict(item) for item in observation.inventory[: limits.max_inventory]]
     experiences = list(experiences)[: limits.max_experiences]
+    instruction_rows = [_compact_instruction(row) for row in list(instructions)[: limits.max_instructions]]
     recent = _recent_rows(recent_results, limits.max_recent_actions, time.time() if now is None else now)
     failures = [row for row in recent if row["state"] in ("failed", "unknown", "blocked")][:3]
     menu = observation.menu
@@ -339,6 +357,7 @@ def build_context(
         else [descriptor.to_dict() for descriptor in abilities],
         "candidates": _compact_candidates(candidates or {}),
         "experiences": experiences,
+        "instructions": instruction_rows,
         "recent_actions": recent,
         "recent_failures": failures,
         "last_result": _compact_result(last_result)
@@ -350,6 +369,8 @@ def build_context(
             "entity_counts 是可锄/需浇/可收/可装水/可播种（plantable）/种子数量（seeds）",
             "ref 只在单次快照内有效；坐标与 target_id 跨快照稳定；判据 path 只能引用观察根字段",
             "recent_actions 的 state=blocked 表示执行器没下发，原样重发会被再次拦",
+            "instructions 是用户直接给的指令/建议：优先级最高，但不能绕过能力参数与安全边界；"
+            "照做后把对应 id 写进 followed_instructions，做不到就在 reason 里说明",
         ],
     }
     return context

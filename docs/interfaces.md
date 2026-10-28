@@ -181,6 +181,9 @@
 - `ActionOwnership(*, clock)`：`acquire(owner, action_id)`、`release(lease)`、
   `force_release()`、`current`。
 - `StopSignal()` / `StopFile(path)`：`reason()`、`request(reason)`、`clear()`。
+- `HumanInbox(root, *, clock)`：`send(text, kind, ttl_seconds, priority)`、`messages(now, include_finished)`、
+  `pending(limit)`、`deliver(ids)`、`follow(ids, note)`、`drop(id, note)`、`summary()`。
+  指令文件由 CLI 创建；运行进程只写 `ack.json`，不覆盖别人的新指令。
 - `Recorder(*, sink, clock, wall_clock)`：`emit(...)`、`duration(name, seconds)`、`metrics()`；
   `combine_sinks(*sinks)` 把多个接收方（持久化、控制台）合成一个 sink。
 - `ConsoleReporter(stream=None, enabled=True)` / `format_event(event)`：实时打印目标、动作与结果；
@@ -207,6 +210,8 @@
   observe, store, include_fishing, console)`、`status_report(config)`、
   `export_evidence(config, out, *, event_limit)`、`doctor_report(config, *,
   probe_bridge, timeout)`、`write_state(path, payload)`。
-- `main(argv=None) -> int`；子命令 `run/status/stop/doctor/export/stats/skills`；
-  `run --quiet` 关闭实时控制台输出；`stats` 输出行动拦截/失败占比（`--days`、`--save-key`）。
+- `main(argv=None) -> int`；子命令 `run/status/stop/doctor/export/stats/skills/tell/inbox`；
+  `run --quiet` 关闭实时控制台输出；`stats` 输出行动拦截/失败占比（`--days`、`--save-key`）；
+  `tell "指令" [--kind instruction|suggestion|constraint] [--ttl 秒] [--priority 1-9]` 写入人类指令；
+  `inbox list [--all]` / `inbox drop --id ...` 查看或撤销指令（`--inbox` 可指定目录）。
 

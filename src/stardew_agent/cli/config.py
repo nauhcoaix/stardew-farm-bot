@@ -39,6 +39,7 @@ KNOWN_KEYS = REQUIRED_KEYS + (
     "state_path",
     "stop_path",
     "embedding_dir",
+    "inbox_dir",
     "max_context_entities",
     "max_notable_entities",
 )
@@ -69,6 +70,7 @@ class AgentConfig:
     console_output: bool = True
     state_path: Path = Path("data/state.json")
     stop_path: Path = Path("data/stop.json")
+    inbox_dir: Path = Path("data/inbox")
     embedding_dir: Path | None = None
     max_context_entities: int = 120
     max_notable_entities: int = 24
@@ -118,6 +120,8 @@ class AgentConfig:
             "max_context_entities": self.max_context_entities,
             "max_notable_entities": self.max_notable_entities,
             "experience_db": str(self.experience_db),
+            "state_path": str(self.state_path),
+            "inbox_dir": str(self.inbox_dir),
             "long_term_goal": self.long_term_goal,
             "poll_seconds": self.poll_seconds,
             "console_output": self.console_output,
@@ -210,6 +214,7 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path | None = None
         console_output=console_output,
         state_path=path_of("state_path") or Path("data/state.json"),
         stop_path=path_of("stop_path") or Path("data/stop.json"),
+        inbox_dir=path_of("inbox_dir") or Path("data/inbox"),
         embedding_dir=path_of("embedding_dir"),
         max_context_entities=int(data.get("max_context_entities") or 120),
         max_notable_entities=_require_int(data, "max_notable_entities", 24),
