@@ -20,11 +20,16 @@ from typing import Callable
 
 @dataclass(frozen=True)
 class RepeatPolicy:
-    """限频参数。两个值都来自运行配置，不提供隐式默认值。"""
+    """限频参数。``window_seconds`` / ``max_runs`` 来自运行配置，不提供隐式默认值。
+
+    ``exempt_abilities`` 是能力 id 白名单：其中的能力完全不参与限频检查与计数
+    （例如只切换手持槽位的 ``select_item``）。它只跳过限频，不跳过参数/前提/所有权/预算校验。
+    """
 
     window_seconds: float
     max_runs: int
     max_tracked: int = 2000
+    exempt_abilities: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.window_seconds < 0:
@@ -33,6 +38,14 @@ class RepeatPolicy:
             raise ValueError("max_runs 至少为 1")
         if self.max_tracked < 1:
             raise ValueError("max_tracked 至少为 1")
+        if not isinstance(self.exempt_abilities, frozenset):
+            object.__setattr__(self, "exempt_abilities", frozenset(self.exempt_abilities))
+        if any(not isinstance(name, str) or not name.strip() for name in self.exempt_abilities):
+            raise ValueError("exempt_abilities 必须是非空能力 id")
+
+    def exempts(self, ability: str | None) -> bool:
+        return bool(ability) and ability in self.exempt_abilities
+
 
 
 @dataclass(frozen=True)
@@ -56,9 +69,14 @@ class RepeatGuard:
         self.clock = clock
         self._runs: dict[str, list[float]] = {}
 
-    def check(self, key: str) -> GuardDecision:
-        """能否执行；``kind`` 为 ``recent``（窗口内）或 ``limit``（次数用尽）。"""
+    def check(self, key: str, *, ability: str | None = None) -> GuardDecision:
+        """能否执行；``kind`` 为 ``recent``（窗口内）、``limit``（次数用尽）或 ``exempt``（白名单）。
+
+        白名单按能力 id 判断：同一个能力的不同参数（不同地块/槽位）都豁免。
+        """
         runs, last = self._row(key)
+        if self.policy.exempts(ability):
+            return GuardDecision(True, "能力 %s 在限频白名单中" % ability, "exempt", int(runs))
         now = self.clock()
         if last is not None and now - last < self.policy.window_seconds:
             return GuardDecision(
@@ -76,8 +94,10 @@ class RepeatGuard:
             )
         return GuardDecision(True, "", "", int(runs))
 
-    def record(self, key: str) -> int:
-        """记录一次“模型要求的新执行”，返回累计次数。"""
+    def record(self, key: str, *, ability: str | None = None) -> int:
+        """记录一次“模型要求的新执行”，返回累计次数；白名单能力不计数。"""
+        if self.policy.exempts(ability):
+            return 0
         runs, _ = self._row(key)
         self._runs[key] = [runs + 1, self.clock()]
         if len(self._runs) > self.policy.max_tracked:
@@ -98,6 +118,7 @@ class RepeatGuard:
                 "window_seconds": self.policy.window_seconds,
                 "max_runs": self.policy.max_runs,
                 "max_tracked": self.policy.max_tracked,
+                "exempt_abilities": sorted(self.policy.exempt_abilities),
             },
         }
 

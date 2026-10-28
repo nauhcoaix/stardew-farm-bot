@@ -24,6 +24,7 @@ class RunBudget:
         *,
         wall_clock_seconds: float,
         model_requests: int,
+        min_interval_seconds: float = 0.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if wall_clock_seconds is None or model_requests is None:
@@ -32,10 +33,14 @@ class RunBudget:
             raise ConfigError("wall_clock_seconds 必须大于 0")
         if int(model_requests) < 1:
             raise ConfigError("model_requests 至少为 1")
+        if not 0 <= float(min_interval_seconds) <= 3600:
+            raise ConfigError("min_interval_seconds 应在 0～3600 秒（0 表示不限制）")
         self.wall_clock_seconds = float(wall_clock_seconds)
         self.model_requests = int(model_requests)
+        self.min_interval_seconds = float(min_interval_seconds)
         self.clock = clock
         self.started_at: float | None = None
+        self.last_request_at: float | None = None
         self.requests = 0
         self.tokens: int | None = 0
         self.cost_note = "unknown"
@@ -71,11 +76,19 @@ class RunBudget:
             raise BudgetExhausted(self._message(reason))
 
     # ---- 记账 -----------------------------------------------------
+    def next_request_delay(self, now: float | None = None) -> float:
+        """距下一次允许请求还要等多少秒（``0`` 表示现在就可以）。"""
+        if self.min_interval_seconds <= 0 or self.last_request_at is None:
+            return 0.0
+        current = self.clock() if now is None else now
+        return max(0.0, self.min_interval_seconds - (current - self.last_request_at))
+
     def consume_model_request(self, *, tokens: int | None = None) -> int:
         """在请求**开始**时记账，失败与重试都算一次。"""
         if self.requests >= self.model_requests:
             raise BudgetExhausted(self._message("model_requests"))
         self.requests += 1
+        self.last_request_at = self.clock()
         self.record_tokens(tokens)
         return self.requests
 
@@ -90,6 +103,7 @@ class RunBudget:
         return {
             "wall_clock_seconds": self.wall_clock_seconds,
             "model_requests": self.model_requests,
+            "min_interval_seconds": self.min_interval_seconds,
             "elapsed_seconds": round(self.elapsed(), 3),
             "remaining_seconds": round(self.remaining_seconds(), 3),
             "requests_used": self.requests,

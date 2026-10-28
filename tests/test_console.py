@@ -113,6 +113,8 @@ def test_运行汇总包含各类计数():
     assert "失败 1" in out
     assert "42.4 秒" in out
     assert "max_actions" in out
+    assert "拦截 25.0%" in out
+    assert "失败 25.0%" in out
 
 
 def test_未知事件不输出():

@@ -11,7 +11,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from ..abilities import (
     AbilityRegistry,
@@ -173,10 +173,19 @@ def make_decider(
     budget: RunBudget,
     config: AgentConfig,
     state: dict,
-) -> Callable[[Observation, ActionResult | None], Awaitable[Decision | None]]:
+) -> Callable[[Observation, ActionResult | None, Sequence[Mapping[str, Any]]], Awaitable[Decision | None]]:
     """组装一次模型决策：检索经验 → 组装上下文 → 请求 → 解析校验。"""
 
-    async def decide(observation: Observation, last_result: ActionResult | None) -> Decision | None:
+    async def decide(
+        observation: Observation,
+        last_result: ActionResult | None,
+        recent_results: Sequence[Mapping[str, Any]] = (),
+    ) -> Decision | None:
+        limits = ContextLimits(max_entities=config.max_context_entities)
+        recent = list(recent_results)
+        if not recent and observation.save_key:
+            # 重启后内存历史为空：从证据库补读，让模型仍能看到之前的失败。
+            recent = store.recent_actions(observation.save_key, limit=limits.max_recent_actions)
         query = "%s %s" % (observation.location or "", state.get("goal") or config.long_term_goal)
         experiences = store.recall(query, save_key=observation.save_key, limit=8)
         context = build_context(
@@ -185,12 +194,15 @@ def make_decider(
             candidates=build_candidates(observation, store),
             experiences=experiences,
             last_result=last_result.to_dict() if last_result else None,
+            recent_results=recent,
             budget=budget.snapshot(),
             long_term_goal=config.long_term_goal,
             goal_revision=int(state.get("goal_revision") or 0),
-            limits=ContextLimits(max_entities=config.max_context_entities),
+            limits=limits,
         )
-        reply = await model.complete(build_messages(context))
+        reply = await model.complete(
+            build_messages(context, include_completion=config.model_completion_enabled)
+        )
         budget.record_tokens(reply.total_tokens)
         if not reply.parsed:
             raise ModelError("模型回复没有可解析的 JSON 对象")
@@ -283,9 +295,17 @@ async def build_runtime(
     port = fishing_port if fishing_port is not None else (MailboxFishingPort(config.fishing_mailbox) if include_fishing else None)
 
     registry = build_registry(bridge, port, store=store)
-    budget = RunBudget(wall_clock_seconds=config.budget_seconds, model_requests=config.budget_requests)
+    budget = RunBudget(
+        wall_clock_seconds=config.budget_seconds,
+        model_requests=config.budget_requests,
+        min_interval_seconds=config.model_request_interval_seconds,
+    )
     guard = RepeatGuard(
-        RepeatPolicy(window_seconds=config.repeat_window_seconds, max_runs=config.repeat_max_runs)
+        RepeatPolicy(
+            window_seconds=config.repeat_window_seconds,
+            max_runs=config.repeat_max_runs,
+            exempt_abilities=frozenset(config.repeat_exempt_abilities),
+        )
     )
     recorder = Recorder(
         sink=combine_sinks(
@@ -308,6 +328,7 @@ async def build_runtime(
         stop=StopFile(config.stop_path),
         poll_seconds=config.poll_seconds,
         step_interval_seconds=config.step_interval_seconds,
+        use_model_completion=config.model_completion_enabled,
         action_key=default_action_key,
     )
     return Runtime(
@@ -385,10 +406,12 @@ def status_report(config: AgentConfig) -> dict:
         state = {}
     store_summary: dict = {}
     skills: list[dict] = []
+    actions: dict = {}
     if Path(config.experience_db).exists():
         store = ExperienceStore(config.experience_db)
         try:
             store_summary = store.summary()
+            actions = store.action_stats()
             skills = [
                 {"id": row["id"], "version": row["version"], "status": row["status"]}
                 for row in store.list_skills()
@@ -398,6 +421,7 @@ def status_report(config: AgentConfig) -> dict:
     return {
         "state": state,
         "store": store_summary,
+        "actions": actions,
         "skills": skills,
         "stop_requested": StopFile(config.stop_path).reason(),
     }

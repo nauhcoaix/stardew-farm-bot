@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -31,6 +33,7 @@ class ContextLimits:
     max_inventory: int = 40
     max_experiences: int = 8
     max_menu_options: int = 12
+    max_recent_actions: int = 8
 
 
 def _distance(origin: Mapping[str, Any], entity: Mapping[str, Any]) -> int:
@@ -55,6 +58,30 @@ def _trim_entities(
     }
 
 
+def _recent_rows(rows: Iterable[Mapping[str, Any]], limit: int, now: float) -> list[dict]:
+    """把历史动作压缩成模型可读的条目：字段截断，附“多少秒前”。"""
+    out: list[dict] = []
+    for row in list(rows)[: max(0, int(limit))]:
+        params = row.get("params") or {}
+        try:
+            params_text = json.dumps(dict(params), ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            params_text = str(params)
+        at = row.get("recorded_at")
+        out.append(
+            {
+                "ability": str(row.get("ability") or "?"),
+                "params": params_text[:120],
+                "state": str(row.get("state") or "unknown"),
+                "detail": str(row.get("detail") or "")[:160],
+                "progress": bool(row.get("progress")),
+                "goal": str(row.get("goal") or "")[:80],
+                "seconds_ago": int(max(0.0, now - float(at))) if isinstance(at, (int, float)) else None,
+            }
+        )
+    return out
+
+
 def build_context(
     *,
     observation: Observation,
@@ -62,16 +89,20 @@ def build_context(
     candidates: Mapping[str, Any] | None = None,
     experiences: Iterable[Mapping[str, Any]] = (),
     last_result: Mapping[str, Any] | None = None,
+    recent_results: Iterable[Mapping[str, Any]] = (),
     budget: Mapping[str, Any] | None = None,
     long_term_goal: str = DEFAULT_LONG_TERM_GOAL,
     goal_revision: int = 0,
     limits: ContextLimits | None = None,
+    now: float | None = None,
 ) -> dict:
     """组装一份可序列化的决策上下文。"""
     limits = limits or ContextLimits()
     entities, entity_trim = _trim_entities(observation, limits)
     inventory = [dict(item) for item in observation.inventory[: limits.max_inventory]]
     experiences = list(experiences)[: limits.max_experiences]
+    recent = _recent_rows(recent_results, limits.max_recent_actions, time.time() if now is None else now)
+    failures = [row for row in recent if row["state"] in ("failed", "unknown", "blocked")][:3]
     menu = observation.menu
     if menu:
         options = list(menu.get("options") or [])[: limits.max_menu_options]
@@ -100,12 +131,15 @@ def build_context(
         "abilities": [descriptor.to_dict() for descriptor in abilities],
         "candidates": dict(candidates or {}),
         "experiences": experiences,
+        "recent_actions": recent,
+        "recent_failures": failures,
         "last_result": dict(last_result) if last_result else None,
         "budget": dict(budget or {}),
         "provided_knowledge": [
             "能力目录：能力 id、参数、观察需求、真实前提、完成判据",
             "观察字段含义：可通行/可耕/需浇水等是游戏桥提供的结构化属性",
             "ref 的时效：ref 只在单次快照内有效；坐标与 target_id 跨快照稳定",
+            "recent_actions：最近几次动作的真实状态（成功/失败/未知/拦截）与原因",
             "长期目标文字（用户可修改）",
         ],
     }

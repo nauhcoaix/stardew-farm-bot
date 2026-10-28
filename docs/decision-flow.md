@@ -7,8 +7,8 @@
 
 ## 0. 一句话版本
 
-模型只负责“目标 + 一个受限能力调用 + 完成判据”，执行器负责观察、改绑临时引用、校验前提、
-单一动作所有权、分段执行、重新观察验证，并把成功/失败/未知/取消如实写成事件与经验。
+模型只负责“目标 + 一个受限能力调用”（可选、默认不写完成判据），执行器负责观察、改绑临时引用、
+校验前提、单一动作所有权、分段执行、重新观察验证，并把成功/失败/未知/取消如实写成事件与经验。
 
 ```mermaid
 flowchart LR
@@ -73,22 +73,32 @@ flowchart LR
 **ref 的语义**：形如 `@s63:e196`，`s63` 是快照序号（`mods/game_bridge_mod/Observations.cs`：
 `var id = "s" + ++sequence`）。ref **只在这一次快照内有效**；这一点决定了第 7 节的改绑。
 
-## 4. 发起决策（与已委托动作并行）
+## 4. 发起决策（委托结算后）
 
 主循环 `AgentLoop.run`（`runtime/loop.py:146`）：
 
-1. `_halt_reason`（200）：停止文件或预算用尽 → 不再下发新动作；
-2. `_observe`（210）：失败只记录 `observe_failed` 并等待，不崩溃；
-3. `_note_context`（225）：存档/游戏日变化 → `guard.reset()`；
-4. 若没有在途决策请求 → `asyncio.create_task(_ask(observation))`，并把这次观察记为 `_decision_based_on`；
+1. `_halt_reason`：停止文件或预算用尽 → 不再下发新动作；
+2. `_observe`：失败只记录 `observe_failed` 并等待，不崩溃；
+3. `_note_context`：存档/游戏日变化 → `guard.reset()`；
+4. 只有**当前没有在途委托、也没有在途决策**时才发起 `_ask`（`asyncio.create_task`），
+   并把这次观察记为 `_decision_based_on`；
 5. 若有在途委托 → `_step_active` 推进一个分段，然后 `sleep(step_interval_seconds)`，避免空转。
 
-`_ask`（234）：
+**为什么委托结算后才请求决策**：模型需要看到“这一步到底成功还是失败”才能修正下一步。
+若在动作执行期间提前请求，模型看到的是上一次的结果，容易重复同一个失败动作。
+推理期间游戏照常运行（不暂停），只是不提前请求；这是“实时”与“看到最新结果”之间的取舍。
 
-- **先** `budget.consume_model_request()`（`runtime/budget.py:74`）——失败/重试都算一次；
-- 调 `request_decision(observation, last_result)`；
+`_ask`：
+
+- 先看最小请求间隔：`budget.next_request_delay()`（`runtime/budget.py`）若 >0，
+  由 `_sleep_unless_halted`（`runtime/loop.py`）分段等待并随时响应停止，
+  记录 `model_rate_limited`；等待期间游戏继续、主循环照常观察；
+- **再** `budget.consume_model_request()`——失败/重试都算一次；
+- 调 `request_decision(observation, last_result, recent_actions)`：除了最近一次结果，
+  还传最近几次动作的摘要（最新在前），由 loop 的 `_remember` 维护；
 - 抛错 → `decision_failed`（网络/解析），不重发；
-- 成功 → 记录 `model_latency` 与 `decision_received`（目标、修订号、快照、**参数**、原因、完成判据、备注）。
+- 成功 → 记录 `model_latency` 与 `decision_received`（目标、修订号、快照、**参数**、原因、
+  模型原样的完成判据（若写了）、备注）。
 
 ## 5. 组装上下文：给模型什么、不给什么
 
@@ -105,6 +115,9 @@ flowchart LR
    - 现场（按与人物距离截断，报告 dropped 数量与排序理由）；
    - `abilities`：能力 id、版本、参数说明、观察需求、作用范围、完成判据；
    - `candidates` / `experiences` / `last_result`（上一次委托的真实结果）/ `budget`；
+   - `recent_actions`：最近 8 条动作（能力、参数摘要、状态、原因、多少秒前），最新在前；
+   - `recent_failures`：其中 `failed` / `unknown` / `blocked` 的前 3 条，方便模型优先注意；
+   - 刚重启时运行时历史为空，`make_decider` 会从 `store.recent_actions` 补读该存档最近的动作；
    - `long_term_goal` 与 `goal_revision`；
    - `provided_knowledge`：项目主动提供的四类信息（能力目录、字段含义、ref 时效、长期目标文字）。
 
@@ -124,6 +137,7 @@ flowchart LR
    - `params` 必须是对象，并立即通过 `AbilityRegistry.validate_params`（`abilities/registry.py:47`）→ 能力的 `validate`；
    - `completion` / `stop_conditions` 必须通过受限判据校验（`decision/predicates.py:validate`，42）：
      只允许观察字段路径 + `== != < <= > >= in not_in exists absent` + JSON 字面量；
+     `completion` 默认可省略（见第 9 节），`stop_conditions` 仅供参考、不参与结算；
    - 决策**绑定我们给出的那次观察**（`based_on_snapshot_id` / `based_on_sampled_at`），不是模型自称的时间。
 
 任何一步失败都算一次请求消耗，并记录 `decision_failed`；不会带着半成品去执行。
@@ -161,6 +175,11 @@ flowchart LR
 `repeat_blocked`，记 `_last_result(state=blocked)`，模型下一轮能在上下文里看到。
 **只有真正下发时才 `record`（79）**，执行器自己的有进展续跑不计数；换存档/换日 `reset`（90）。
 
+`RepeatPolicy.exempt_abilities`（配置 `repeat_exempt_abilities`，默认示例为 `["select_item"]`）
+里的能力不参与限频检查与计数：`check`/`record` 收到对应 `ability` 时直接放行，
+返回 `kind="exempt"`。它只跳过限频，不跳过参数、前提、所有权与预算校验；写操作
+（`use`/`interact`/`fish`）不建议列入白名单，否则会失去“无进展重复”的保护。
+
 ### 7.4 前提（`abilities/registry.py:start`，58 → `abilities/base.py`）
 
 `start` 先 `validate` 参数，再 `check_premises`，然后 `raise_for_premises`（133）：
@@ -181,7 +200,7 @@ flowchart LR
 ### 7.6 记账并下发
 
 - `guard.record(key)`（只有到这里才算“新的一次执行”）；
-- 记录 `action_started`：动作 ID、参数、目标、完成判据、停止条件、
+- 记录 `action_started`：动作 ID、参数、目标、实际采用的完成判据、`completion_ignored`、停止条件、
   **观察→下发延迟**、租约；
 - 委托进入 `_active`，循环开始分段推进。
 
@@ -213,9 +232,12 @@ flowchart LR
 
 ## 9. 结算与验证（`loop._finish`，449）
 
-1. 若决策带 `completion`：`predicates.evaluate_all([completion], after)`
+1. 若启用 `model_completion_enabled` 且决策带 `completion`：
+   `predicates.evaluate_all([completion], after)`
    - `False` → 把 `completed` 改判为 `failed`（**判据只能否决成功，不能把失败/未知升级为完成**）；
    - `None`（当前感知无法验证）→ 保留能力给出的状态，并在证据里标 `met=None`；
+   - 默认关闭：模型写的 `completion` 只记进 `decision_received`，
+     `action_started` 里标 `completion_ignored=true`，不参与结算。
 2. 构造 `ActionResult`（`contracts/results.py`）：四态 `completed/failed/cancelled/unknown`、
    `progress`、耗时、`before_sampled_at`/`after_sampled_at`、证据（差分、位置、校验标记）；
 3. `_release_lease`（498）释放动作所有权；
@@ -239,6 +261,19 @@ flowchart LR
    打印异常会自我停用，不影响运行。
 
 经验检索在下一轮 `store.recall` 生效：机制经验跨存档但必须已验证，存档事实按 `save_key` 隔离。
+
+### 行动统计口径
+
+`ExperienceStore.action_stats`（`experience/store.py`）从事件表聚合：
+
+- `executed`：`kind='action'` 的动作数；
+- `blocked`：`repeat_blocked` + `delegation_rejected` + `ownership_busy`；
+- `attempts = executed + blocked`，`ratios` 以 `attempts` 为分母；
+- `failure_ratio_executed = failed / executed`，单看已执行动作的失败率；
+- `by_ability` 给出每个能力的同一组数字，`summary_line` 是一行中文摘要。
+
+`start-agent.bat stats`（可加 `--days N`、`--save-key`）输出这份统计；运行结束时的
+控制台汇总也打印本次拦截率/失败率（分母同样是“动作 + 拦截”）。
 
 ## 11. 停止与收尾（`loop._shutdown`，543）
 

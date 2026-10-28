@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
@@ -30,7 +31,9 @@ from .events import Recorder
 from .ownership import ActionOwnership, Lease
 from .stop import StopSource
 
-DecisionRequester = Callable[[Observation, ActionResult | None], Awaitable[Decision | None]]
+DecisionRequester = Callable[
+    [Observation, ActionResult | None, Sequence[Mapping[str, Any]]], Awaitable[Decision | None]
+]
 DelegationFactory = Callable[[AbilityCall, Observation], Delegation]
 PremiseSupplier = Callable[[AbilityCall, Observation], Sequence[Mapping[str, Any]]]
 KeyFunction = Callable[[Any], str]
@@ -106,6 +109,8 @@ class AgentLoop:
         stop: StopSource | None = None,
         poll_seconds: float = 0.5,
         step_interval_seconds: float = 0.2,
+        recent_history_limit: int = 8,
+        use_model_completion: bool = False,
         idle_log_seconds: float = 10.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -122,6 +127,7 @@ class AgentLoop:
         self.stop_source = stop
         self.poll_seconds = float(poll_seconds)
         self.step_interval_seconds = float(step_interval_seconds)
+        self.use_model_completion = bool(use_model_completion)
         self.idle_log_seconds = float(idle_log_seconds)
         self.clock = clock
 
@@ -141,6 +147,7 @@ class AgentLoop:
         self._idle_accum = 0.0
         self._halted: str | None = None
         self._observation_at = 0.0
+        self._recent: deque[dict] = deque(maxlen=max(1, int(recent_history_limit)))
 
     # ---- 对外入口 -------------------------------------------------
     async def run(self, *, max_actions: int | None = None) -> LoopSummary:
@@ -162,8 +169,9 @@ class AgentLoop:
                     await self._idle()
                     continue
                 self._note_context(observation)
-                if self._decision_task is None:
-                    # 推理与已委托动作并行；决策只有在执行前的新鲜度检查通过才会下发。
+                if self._active is None and self._decision_task is None:
+                    # 委托结算后才发起下一次决策：模型看到的 last_result 与最近历史是最新的。
+                    # 推理期间游戏继续运行（不暂停），只是不提前请求下一步。
                     self._decision_based_on = observation
                     self._decision_task = asyncio.create_task(self._ask(observation))
                 if self._active is not None:
@@ -233,13 +241,22 @@ class AgentLoop:
 
     async def _ask(self, observation: Observation) -> Decision | None:
         started = self.clock()
+        delay = self.budget.next_request_delay()
+        if delay > 0:
+            self._record(
+                "model_rate_limited",
+                payload={"wait_seconds": round(delay, 3), "min_interval_seconds": self.budget.min_interval_seconds},
+            )
+            await self._sleep_unless_halted(delay)
+            if self._halt_reason() is not None:
+                return None
         try:
             self.budget.consume_model_request()
         except BudgetExhausted:
             self._record("budget_exhausted", payload={"budget": self.budget.snapshot()})
             return None
         try:
-            decision = await self.request_decision(observation, self._last_result)
+            decision = await self.request_decision(observation, self._last_result, tuple(reversed(self._recent)))
         except Exception as exc:  # noqa: BLE001 - 请求/解析失败属于运行语义
             self._record(
                 "decision_failed",
@@ -266,6 +283,17 @@ class AgentLoop:
             )
         return decision
 
+    async def _sleep_unless_halted(self, seconds: float) -> None:
+        """等待模型请求间隔；期间响应停止与预算，避免长时间不可中断。"""
+        deadline = self.clock() + max(0.0, seconds)
+        while True:
+            if self._halt_reason() is not None:
+                return
+            left = deadline - self.clock()
+            if left <= 0:
+                return
+            await asyncio.sleep(min(0.2, left))
+
     async def _idle(self) -> None:
         """没有可执行委托：真实等待并记录原因，不擅自开新任务。"""
         started = self.clock()
@@ -286,6 +314,10 @@ class AgentLoop:
         kwargs.setdefault("save_key", self._save_key)
         kwargs.setdefault("session", self._session)
         self.recorder.emit(kind, **kwargs)
+
+    def _remember(self, result: ActionResult, goal: str = "") -> None:
+        """记录给模型看的精简历史（含 blocked/failed/unknown）。"""
+        self._recent.append(result.to_brief(goal=goal, recorded_at=time.time()))
 
     async def _consume_decision(self, observation: Observation) -> str | None:
         task, self._decision_task = self._decision_task, None
@@ -342,7 +374,7 @@ class AgentLoop:
 
         key = self.action_key(call)
         if self.guard is not None:
-            verdict: GuardDecision = self.guard.check(key)
+            verdict: GuardDecision = self.guard.check(key, ability=call.ability)
             if not verdict.allowed:
                 self.summary.blocked += 1
                 self._last_result = ActionResult(
@@ -355,6 +387,7 @@ class AgentLoop:
                     before_sampled_at=observation.sampled_at,
                 )
                 self._record("repeat_blocked", ability=call.ability, status="blocked", payload=verdict.to_dict())
+                self._remember(self._last_result, decision.goal)
                 await self._idle()
                 return None
 
@@ -377,6 +410,7 @@ class AgentLoop:
                 status="blocked",
                 payload={"error": exc.code, "detail": str(exc)[:300]},
             )
+            self._remember(self._last_result, decision.goal)
             return None
 
         halt = self._halt_reason()
@@ -391,13 +425,15 @@ class AgentLoop:
             return None
 
         if self.guard is not None:
-            self.guard.record(key)
+            self.guard.record(key, ability=call.ability)
         self._active = delegation
         self._lease = lease
         self._active_before = observation
         self._active_started = self.clock()
         self._active_goal = decision.goal
-        self._pending_completion = decision.completion
+        # 默认不采用模型自报的完成判据：完成由能力的前后观察验证决定。
+        self._pending_completion = decision.completion if self.use_model_completion else None
+        completion_ignored = bool(decision.completion) and not self.use_model_completion
         self.summary.actions += 1
         self._record(
             "action_started",
@@ -406,7 +442,8 @@ class AgentLoop:
                 "action_id": delegation.action_id,
                 "params": dict(call.params),
                 "goal": decision.goal,
-                "completion": dict(decision.completion) if decision.completion else None,
+                "completion": dict(self._pending_completion) if self._pending_completion else None,
+                "completion_ignored": completion_ignored,
                 "stop_conditions": list(decision.stop_conditions),
                 "observation_to_dispatch_seconds": round(self.clock() - self._observation_at, 3),
                 "lease": lease.to_dict(),
@@ -476,6 +513,7 @@ class AgentLoop:
         self._active = None
         self._pending_completion = None
         self._last_result = result
+        self._remember(result, self._active_goal)
         self._count_result(state)
         await self._release_lease()
         self._record(
@@ -531,6 +569,7 @@ class AgentLoop:
         self._active = None
         self._pending_completion = None
         self._last_result = result
+        self._remember(result, self._active_goal)
         self.summary.cancelled += 1
         await self._release_lease()
         self._record(

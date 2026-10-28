@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,9 @@ import pytest
 from stardew_agent.cli.config import AgentConfig, config_from_mapping, load_config
 from stardew_agent.cli.main import main
 from stardew_agent.contracts.errors import ConfigError
+from stardew_agent.contracts.experience import Event
+from stardew_agent.contracts.results import ActionResult
+from stardew_agent.experience import ExperienceStore
 
 REQUIRED = {
     "budget_seconds": 60,
@@ -125,3 +129,144 @@ def test_skills_list在没有库时说明原因(tmp_path: Path, capsys):
     )
     assert code == 0
     assert "经验库还不存在" in capsys.readouterr().out
+
+
+def test_限频白名单从配置读取():
+    config = config_from_mapping(dict(REQUIRED, repeat_exempt_abilities=["select_item"]))
+    assert config.repeat_exempt_abilities == ("select_item",)
+    assert config.public()["repeat_exempt_abilities"] == ["select_item"]
+
+    for bad in ("select_item", [1], [""]):
+        with pytest.raises(ConfigError):
+            config_from_mapping(dict(REQUIRED, repeat_exempt_abilities=bad))
+
+
+def test_命令行可覆盖限频白名单(tmp_path: Path):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps(REQUIRED), encoding="utf-8")
+    config = load_config(config_file, overrides={"repeat_exempt_abilities": ["select_item", "choose_menu_option"]})
+    assert config.repeat_exempt_abilities == ("select_item", "choose_menu_option")
+
+
+def test_命令行参数解析白名单():
+    from stardew_agent.cli.main import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--seconds",
+            "10",
+            "--requests",
+            "2",
+            "--repeat-window",
+            "1",
+            "--repeat-max",
+            "2",
+            "--repeat-exempt",
+            "select_item, choose_menu_option",
+        ]
+    )
+    assert args.repeat_exempt == "select_item, choose_menu_option"
+
+
+def test_模型请求间隔配置():
+    config = config_from_mapping(dict(REQUIRED, model_request_interval_seconds=2.5))
+    assert config.model_request_interval_seconds == 2.5
+    assert config.public()["model_request_interval_seconds"] == 2.5
+
+    for bad in (-1, 9999):
+        with pytest.raises(ConfigError):
+            config_from_mapping(dict(REQUIRED, model_request_interval_seconds=bad))
+
+
+def test_命令行可覆盖模型请求间隔(tmp_path: Path):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps(REQUIRED), encoding="utf-8")
+    config = load_config(config_file, overrides={"model_request_interval_seconds": 3.0})
+    assert config.model_request_interval_seconds == 3.0
+
+
+def test_模型完成判据开关默认关闭():
+    config = config_from_mapping(dict(REQUIRED))
+    assert config.model_completion_enabled is False
+    assert config.public()["model_completion_enabled"] is False
+
+    enabled = config_from_mapping(dict(REQUIRED, model_completion_enabled=True))
+    assert enabled.model_completion_enabled is True
+
+    with pytest.raises(ConfigError):
+        config_from_mapping(dict(REQUIRED, model_completion_enabled="yes"))
+
+
+def test_命令行可开启模型完成判据(tmp_path: Path):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps(REQUIRED), encoding="utf-8")
+    config = load_config(config_file, overrides={"model_completion_enabled": True})
+    assert config.model_completion_enabled is True
+
+
+def test_stats命令输出占比(tmp_path: Path, capsys):
+    db = tmp_path / "exp.sqlite3"
+    store = ExperienceStore(db)
+    try:
+        store.record_action(
+            ActionResult(action_id="a1", ability="move_to", state="completed"), save_key="save:1"
+        )
+        store.record_action(ActionResult(action_id="a2", ability="use", state="failed"), save_key="save:1")
+        store.append_event(
+            Event(
+                id="ev:b1",
+                kind="repeat_blocked",
+                recorded_at=time.time(),
+                save_key="save:1",
+                ability="use",
+                status="blocked",
+            )
+        )
+    finally:
+        store.close()
+
+    code = main(
+        [
+            "stats",
+            "--seconds",
+            "10",
+            "--requests",
+            "2",
+            "--repeat-window",
+            "1",
+            "--repeat-max",
+            "2",
+            "--db",
+            str(db),
+        ]
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["attempts"] == 3
+    assert payload["executed"] == 2
+    assert payload["blocked"] == 1
+    assert payload["ratios"]["blocked"] == pytest.approx(1 / 3, rel=1e-3)
+    assert payload["by_ability"][0]["ability"] in {"use", "move_to"}
+
+
+def test_stats命令在没有经验库时也能输出(tmp_path: Path, capsys):
+    code = main(
+        [
+            "stats",
+            "--seconds",
+            "10",
+            "--requests",
+            "2",
+            "--repeat-window",
+            "1",
+            "--repeat-max",
+            "2",
+            "--db",
+            str(tmp_path / "missing.sqlite3"),
+        ]
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["attempts"] == 0
+    assert "经验库" in payload["reason"]

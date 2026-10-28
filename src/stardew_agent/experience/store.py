@@ -181,6 +181,35 @@ class ExperienceStore:
             ).fetchall()
         return [_loads(row["body"], {}) for row in rows]
 
+    def recent_actions(self, save_key: str, *, limit: int = 8) -> list[dict]:
+        """该存档最近的动作结果摘要（最新在前）。
+
+        用于重启后第一轮决策：内存里的运行时历史为空，从证据库补读，
+        让模型仍能看到之前哪些动作失败/未知/被拦截。
+        """
+        rows = self.db.execute(
+            "SELECT body FROM events WHERE save_key=? AND kind='action' ORDER BY ts DESC LIMIT ?",
+            (save_key, int(limit)),
+        ).fetchall()
+        briefs: list[dict] = []
+        for row in rows:
+            body = _loads(row["body"], {})
+            payload = body.get("payload") or {}
+            raw = payload.get("result") or {}
+            briefs.append(
+                {
+                    "ability": raw.get("ability") or body.get("ability") or "?",
+                    "params": raw.get("params") or {},
+                    "state": raw.get("state") or body.get("status") or "unknown",
+                    "detail": raw.get("detail") or "",
+                    "progress": bool(raw.get("progress")),
+                    "error": raw.get("error"),
+                    "goal": payload.get("goal") or "",
+                    "recorded_at": body.get("recorded_at"),
+                }
+            )
+        return briefs
+
     # ---- 经验 -----------------------------------------------------
     def add_experience(
         self,
@@ -651,6 +680,115 @@ class ExperienceStore:
             "links": count("SELECT COUNT(*) FROM links"),
             "saves": count("SELECT COUNT(DISTINCT save_key) FROM tiles"),
         }
+
+    def action_stats(self, *, save_key: str | None = None, since_ts: float | None = None) -> dict:
+        """统计所有行动的结果与拦截占比（历史累计，按存档/时间可过滤）。
+
+        口径：
+
+        * ``executed``：真正下发并结算的动作（``kind='action'``）；
+        * ``blocked``：未下发就被挡下的动作（限频、前提拒绝、所有权被占用）；
+        * ``attempts = executed + blocked``，各类占比以 ``attempts`` 为分母；
+        * ``failure_ratio_executed = failed / executed``，单看已执行动作的失败率。
+        """
+        conditions = [
+            "(kind='action' OR kind IN ('repeat_blocked','delegation_rejected','ownership_busy'))"
+        ]
+        params: list[Any] = []
+        if save_key:
+            conditions.append("save_key=?")
+            params.append(save_key)
+        if since_ts is not None:
+            conditions.append("ts>=?")
+            params.append(float(since_ts))
+        rows = self.db.execute(
+            "SELECT ability, kind, status, COUNT(*) AS n FROM events WHERE "
+            + " AND ".join(conditions)
+            + " GROUP BY ability, kind, status",
+            tuple(params),
+        ).fetchall()
+
+        totals = _empty_action_bucket()
+        per_ability: dict[str, dict] = {}
+        for row in rows:
+            name = row["ability"] or "(unknown)"
+            bucket = per_ability.setdefault(name, _empty_action_bucket())
+            _add_action_row(bucket, str(row["kind"]), str(row["status"] or ""), int(row["n"]))
+            _add_action_row(totals, str(row["kind"]), str(row["status"] or ""), int(row["n"]))
+
+        result = _finish_action_bucket(totals)
+        result["filters"] = {"save_key": save_key, "since_ts": since_ts}
+        finished = [
+            dict(_finish_action_bucket(bucket), ability=name) for name, bucket in per_ability.items()
+        ]
+        finished = [row for row in finished if row["attempts"]]
+        finished.sort(key=lambda row: row["attempts"], reverse=True)
+        result["by_ability"] = finished
+        return result
+
+
+RESULT_STATES = ("completed", "failed", "unknown", "cancelled")
+BLOCKED_KINDS = {
+    "repeat_blocked": "blocked_repeat",
+    "delegation_rejected": "blocked_premise",
+    "ownership_busy": "blocked_ownership",
+}
+
+
+def _empty_action_bucket() -> dict:
+    return {
+        "attempts": 0,
+        "executed": 0,
+        "blocked": 0,
+        "completed": 0,
+        "failed": 0,
+        "unknown": 0,
+        "cancelled": 0,
+        "blocked_repeat": 0,
+        "blocked_premise": 0,
+        "blocked_ownership": 0,
+    }
+
+
+def _add_action_row(bucket: dict, kind: str, status: str, count: int) -> None:
+    if kind == "action":
+        state = status if status in RESULT_STATES else "unknown"
+        bucket[state] += count
+        bucket["executed"] += count
+        return
+    bucket["blocked"] += count
+    bucket[BLOCKED_KINDS.get(kind, "blocked_premise")] += count
+
+
+def _finish_action_bucket(bucket: dict) -> dict:
+    attempts = bucket["executed"] + bucket["blocked"]
+    ratios = {
+        name: (round(bucket[name] / attempts, 4) if attempts else 0.0)
+        for name in ("completed", "failed", "unknown", "cancelled", "blocked")
+    }
+    failures = round(bucket["failed"] / bucket["executed"], 4) if bucket["executed"] else 0.0
+    return {
+        **bucket,
+        "attempts": attempts,
+        "ratios": ratios,
+        "failure_ratio_executed": failures,
+        "summary_line": (
+            "行动 %d 次：成功 %d (%.1f%%)、失败 %d (%.1f%%)、未知 %d (%.1f%%)、取消 %d (%.1f%%)、拦截 %d (%.1f%%)"
+            % (
+                attempts,
+                bucket["completed"],
+                ratios["completed"] * 100,
+                bucket["failed"],
+                ratios["failed"] * 100,
+                bucket["unknown"],
+                ratios["unknown"] * 100,
+                bucket["cancelled"],
+                ratios["cancelled"] * 100,
+                bucket["blocked"],
+                ratios["blocked"] * 100,
+            )
+        ),
+    }
 
 
 

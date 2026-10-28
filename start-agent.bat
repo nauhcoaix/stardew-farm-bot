@@ -65,6 +65,7 @@ if /i "%CMD%"=="stop"   goto :do_stop
 if /i "%CMD%"=="status" goto :do_status
 if /i "%CMD%"=="doctor" goto :do_doctor
 if /i "%CMD%"=="export" goto :do_export
+if /i "%CMD%"=="stats"  goto :do_stats
 if /i "%CMD%"=="skills" goto :do_skills
 if /i "%CMD%"=="help"   goto :help
 if /i "%CMD%"=="-h"     goto :help
@@ -130,6 +131,14 @@ if errorlevel 1 goto :fail
 set "RC=%ERRORLEVEL%"
 goto :done
 
+REM ---------------- stats ----------------
+:do_stats
+call :ensure_config
+if errorlevel 1 goto :fail
+"%PY%" -m stardew_agent stats --config "%CONFIG%" %ARGS%
+set "RC=%ERRORLEVEL%"
+goto :done
+
 REM ---------------- skills ----------------
 :do_skills
 call :ensure_config
@@ -148,11 +157,16 @@ echo   start-agent.bat stop            request stop and release control
 echo   start-agent.bat status          last run, memory and skills
 echo   start-agent.bat doctor          read-only self check
 echo   start-agent.bat export          evidence to data\evidence.json
+echo   start-agent.bat stats           blocked/failed ratios from history
 echo   start-agent.bat skills [list ^| retire ...]
 echo.
 echo Extra arguments are passed to the CLI:
 echo   start-agent.bat run --seconds 120 --requests 10
 echo   start-agent.bat run --quiet     (no live console output)
+echo   start-agent.bat run --repeat-exempt select_item   (rate-limit allowlist)
+echo   start-agent.bat run --model-interval 2            (min seconds between model requests)
+echo   start-agent.bat run --model-completion            (use model completion predicates)
+echo   start-agent.bat stats --days 7                    (ratios of the last 7 days)
 echo   start-agent.bat doctor --no-probe
 echo   start-agent.bat skills list
 echo.

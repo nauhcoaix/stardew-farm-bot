@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from stardew_agent.contracts.errors import ExperienceError
-from stardew_agent.contracts.experience import Premise, SkillRun
+from stardew_agent.contracts.experience import Event, Premise, SkillRun
 from stardew_agent.contracts.results import ActionResult
 from stardew_agent.experience import (
     ExperienceStore,
@@ -203,3 +203,80 @@ def test_地区连接与事实按存档隔离(store):
     store.set_fact(SAVE_A, "inventory.slots", 12)
     assert store.get_fact(SAVE_A, "inventory.slots") == 12
     assert store.get_fact(SAVE_B, "inventory.slots") is None
+
+
+def test_行动统计包含拦截与失败占比(store):
+    store.record_action(result("completed", ability="move_to"), save_key=SAVE_A)
+    store.record_action(result("completed", ability="move_to"), save_key=SAVE_A)
+    store.record_action(result("failed", ability="use"), save_key=SAVE_A)
+    store.append_event(
+        Event(id="ev:b1", kind="repeat_blocked", recorded_at=1.0, save_key=SAVE_A, ability="use", status="blocked")
+    )
+    store.append_event(
+        Event(id="ev:b2", kind="delegation_rejected", recorded_at=1.0, save_key=SAVE_A, ability="move_to", status="blocked")
+    )
+
+    stats = store.action_stats()
+    assert stats["attempts"] == 5
+    assert stats["executed"] == 3
+    assert stats["blocked"] == 2
+    assert stats["blocked_repeat"] == 1
+    assert stats["blocked_premise"] == 1
+    assert stats["ratios"]["failed"] == pytest.approx(0.2)
+    assert stats["ratios"]["blocked"] == pytest.approx(0.4)
+    assert stats["failure_ratio_executed"] == pytest.approx(1 / 3, rel=1e-3)
+    assert "拦截" in stats["summary_line"]
+    by = {row["ability"]: row for row in stats["by_ability"]}
+    assert by["move_to"]["attempts"] == 3
+    assert by["use"]["attempts"] == 2
+
+
+def test_行动统计按存档过滤(store):
+    store.record_action(result("completed", ability="move_to"), save_key=SAVE_A)
+    store.record_action(result("failed", ability="use"), save_key=SAVE_B)
+    assert store.action_stats()["attempts"] == 2
+    only_a = store.action_stats(save_key=SAVE_A)
+    assert only_a["attempts"] == 1
+    assert only_a["failed"] == 0
+    assert only_a["completed"] == 1
+
+
+def test_最近动作可从证据库补读(store):
+    store.append_event(
+        Event(
+            id="ev:a1",
+            kind="action",
+            recorded_at=100.0,
+            save_key=SAVE_A,
+            ability="move_to",
+            status="completed",
+            payload={
+                "goal": "走过去",
+                "result": {"ability": "move_to", "params": {}, "state": "completed", "detail": "到达", "progress": True},
+            },
+        )
+    )
+    store.append_event(
+        Event(
+            id="ev:a2",
+            kind="action",
+            recorded_at=200.0,
+            save_key=SAVE_A,
+            ability="use",
+            status="failed",
+            payload={
+                "goal": "浇水",
+                "result": {
+                    "ability": "use",
+                    "params": {"target": "@s1:e1"},
+                    "state": "failed",
+                    "detail": "判据未满足",
+                },
+            },
+        )
+    )
+    rows = store.recent_actions(SAVE_A, limit=5)
+    assert [row["state"] for row in rows] == ["failed", "completed"]
+    assert rows[0]["goal"] == "浇水"
+    assert rows[0]["params"] == {"target": "@s1:e1"}
+    assert store.recent_actions(SAVE_B) == []

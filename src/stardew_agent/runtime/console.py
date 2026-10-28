@@ -132,6 +132,13 @@ def format_event(event: Event) -> list[str]:
     if kind == "cancel_failed":
         return [prefix + "取消失败：" + _clip(payload.get("error") or payload.get("detail") or "", MAX_DETAIL)]
 
+    if kind == "model_rate_limited":
+        return [
+            prefix
+            + "模型请求限速：等待 %.1f 秒（最小间隔 %.1f 秒）"
+            % (float(payload.get("wait_seconds") or 0.0), float(payload.get("min_interval_seconds") or 0.0))
+        ]
+
     if kind == "idle_wait":
         return [
             prefix
@@ -144,9 +151,13 @@ def format_event(event: Event) -> list[str]:
         return [prefix + "运行结束：%s" % _clip(payload.get("reason") or "", 80)]
     if kind == "run_finished":
         summary = dict(payload.get("summary") or {})
+        attempts = int(summary.get("actions", 0) or 0) + int(summary.get("blocked", 0) or 0)
+        blocked_ratio = float(summary.get("blocked", 0) or 0) / attempts if attempts else 0.0
+        failed_ratio = float(summary.get("failed", 0) or 0) / attempts if attempts else 0.0
         return [
             prefix
-            + "汇总：动作 %s（成功 %s / 失败 %s / 未知 %s / 取消 %s / 拦截 %s），用时 %.1f 秒，停止原因 %s"
+            + "汇总：动作 %s（成功 %s / 失败 %s / 未知 %s / 取消 %s / 拦截 %s），"
+            "拦截 %.1f%%、失败 %.1f%%（分母=动作+拦截），用时 %.1f 秒，停止原因 %s"
             % (
                 summary.get("actions", 0),
                 summary.get("completed", 0),
@@ -154,6 +165,8 @@ def format_event(event: Event) -> list[str]:
                 summary.get("unknown", 0),
                 summary.get("cancelled", 0),
                 summary.get("blocked", 0),
+                blocked_ratio * 100,
+                failed_ratio * 100,
                 float(summary.get("elapsed_seconds") or 0.0),
                 summary.get("stop_reason") or "unknown",
             )

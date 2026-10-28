@@ -71,6 +71,7 @@ Steam 的"开始游戏"不会加载 Mod。双击 `start-game.bat`：
 | `start-agent.bat status` | 查看上次运行、经验库与技能版本 |
 | `start-agent.bat doctor` | 只读自检：模型配置、游戏桥、钓鱼 Mod、向量模型、存储路径 |
 | `start-agent.bat export` | 导出脱敏证据到 `data\evidence.json` |
+| `start-agent.bat stats` | 统计历史行动的拦截/失败占比（可加 `--days 7`、`--save-key`） |
 | `start-agent.bat skills` | 列出组合技能版本（可加 `list` / `retire`） |
 | `start-agent.bat help` | 用法 |
 
@@ -100,7 +101,8 @@ start-agent.bat skills list
 [22:20:42] 汇总：动作 2（成功 2 / 失败 0 / 未知 0 / 取消 0 / 拦截 0），用时 0.2 秒，停止原因 max_actions
 ```
 
-- `目标` / `计划动作`：模型这一轮的决定；推理可与当前动作并行，所以可能交错出现；
+- `目标` / `计划动作`：模型这一轮的决定；每次委托结算后才请求下一次决策，
+  所以通常按“目标 → 执行 → 结果”顺序出现；
 - `开始执行`：已拿到动作所有权、真正下发前的确认，括号里是它服务的目标；
 - `成功` / `失败` / `结果未知` / `已取消` / `拦截` / `丢弃过期决策`：真实结果，
   `结果未知` 会提醒先观察核对、不要重发同一写操作；
@@ -113,6 +115,41 @@ start-agent.bat skills list
 ```powershell
 start-agent.bat run --quiet
 ```
+
+### 行动统计：拦截 / 失败占比
+
+`start-agent.bat stats` 从经验库聚合**全部历史行动**（只读，不启动游戏）。可加
+`--days 7` 只看最近 7 天，用 `--save-key save:xxx` 只看某个存档。
+
+```powershell
+start-agent.bat stats
+start-agent.bat stats --days 7
+```
+
+输出字段与口径：
+
+| 字段 | 含义 |
+|---|---|
+| `attempts` | 行动尝试总数 = `executed + blocked` |
+| `executed` | 真正下发并结算的动作数 |
+| `blocked` | 未下发就被挡下：限频（`blocked_repeat`）、前提拒绝（`blocked_premise`）、所有权占用（`blocked_ownership`） |
+| `completed/failed/unknown/cancelled` | 已执行动作的四种结果 |
+| `ratios` | 各类占 `attempts` 的比例（0～1） |
+| `failure_ratio_executed` | `failed / executed`，单看已执行动作的失败率 |
+| `by_ability` | 按能力分组的同一组数字 |
+| `summary_line` | 一行中文摘要，便于直接看 |
+
+本机历史示例（加白名单之前的数据）：
+
+```text
+行动 454 次：成功 146 (32.2%)、失败 48 (10.6%)、未知 119 (26.2%)、取消 3 (0.7%)、拦截 138 (30.4%)
+move_to     180 次：失败 25.6%、拦截 47.2%
+use         173 次：失败 1.2%、未知 65.3%
+select_item 101 次：拦截 51.5%
+```
+
+`select_item` 的拦截是白名单生效前的历史记录；新运行不会再产生这类拦截。运行结束时
+控制台也会打印本次的拦截率/失败率（分母同样是“动作 + 拦截”）。
 
 脚本行为：
 
@@ -160,7 +197,18 @@ stardew-agent skills --config config.json retire --id skill:xxx --reason "前提
 
 - `budget_seconds` 与 `budget_requests` 决定本次运行上限；达到任一上限即停止下发新动作、
   取消在途委托并释放控制，不会额外回家或睡觉。
+- `model_request_interval_seconds` 限制两次模型请求之间的**最小间隔**（秒，0 表示不限制）：
+  到点前循环继续观察游戏并等待，不会丢请求；可用
+  `start-agent.bat run --model-interval 2` 临时覆盖。
 - `repeat_window_seconds` 与 `repeat_max_runs` 是动作限频参数，代码不内置业务默认值。
+- `repeat_exempt_abilities` 是限频白名单（能力 id 数组，示例默认 `["select_item"]`）：
+  其中的能力不参与限频检查与计数，比如反复切换手持槽位不会被当成“重复动作”。
+  它只跳过限频；参数、前提、所有权、预算校验照常执行。可用
+  `start-agent.bat run --repeat-exempt select_item,choose_menu_option` 临时覆盖。
+- `model_completion_enabled` 决定是否采用模型自己写的 `completion` 判据：
+  默认 `false`，提示词里不出现该字段，成败只由能力的前后观察验证决定；
+  设为 `true`（或 `start-agent.bat run --model-completion`）才启用，
+  并且判据只能否决成功，不能把失败或未知升级为完成。
 - `model.json` 支持 `api_key` / `apiKey`，占位符（`your-key` 等）会被拒绝。
 
 密钥不会进入日志、状态文件或证据导出。
@@ -189,6 +237,9 @@ stardew-agent skills --config config.json retire --id skill:xxx --reason "前提
    适用条件与验证状态。组合技能晋级需要三次可区分的真实成功 + 取消测试通过。
 8. **存档隔离。** 地图、库存、关系等事实按 `save_key` 隔离；验证过的机制经验可跨存档，
    但调用前仍检查前提。
+9. **模型能看到最近动作结果。** 上下文包含最近 8 条动作（状态、原因、多少秒前）与失败摘要；
+   刚重启时从证据库补读，不会“忘记刚才失败了什么”。委托结算后才请求下一次决策，
+   避免模型拿旧结果去重复同一个失败动作。
 
 ## 与旧项目的关系
 

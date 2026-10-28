@@ -13,6 +13,7 @@
   `same_scene_as(other)`、`position()`、`to_dict()`。
 - `Decision`、`AbilityCall`、`ActionResult`、`Progress`、`Delegation`（协议）、
   `AbilityDescriptor`、`Event`、`ExperienceRecord`、`SkillVersion`、`SkillRun`、`Premise`。
+  `ActionResult.to_brief(goal="", recorded_at=None)` 产出给模型看的历史条目。
 - 错误：`AgentError` 及子类 `ConfigError/TransportError/ResultUnknown/ProtocolError/
   Rejected/PremiseFailed/BudgetExhausted/OwnershipBusy/Stopped/ModelError/
   ModelUnavailable/ExperienceError`，均带稳定 `code`。
@@ -42,9 +43,12 @@
 
 ## repeat_guard（白名单 9）
 
-- `RepeatPolicy(window_seconds, max_runs, max_tracked=2000)`：前两个参数必填。
-- `RepeatGuard(policy, *, clock)`：`check(key) -> GuardDecision(allowed/reason/kind/runs)`、
-  `record(key)`、`runs(key)`、`reset()`、`snapshot()`。
+- `RepeatPolicy(window_seconds, max_runs, max_tracked=2000, exempt_abilities=frozenset())`：
+  前两个参数必填；`exempt_abilities` 是能力 id 白名单，命中者不参与限频检查与计数。
+- `RepeatGuard(policy, *, clock)`：
+  `check(key, *, ability=None) -> GuardDecision(allowed/reason/kind/runs)`
+  （`kind` 为 `recent` / `limit` / `exempt`）、`record(key, *, ability=None)`、
+  `runs(key)`、`reset()`、`snapshot()`（含白名单）。
 
 ## embeddings（白名单 6）
 
@@ -86,9 +90,13 @@
 
 ## decision
 
-- `build_context(*, observation, abilities, candidates, experiences, last_result, budget,
-  long_term_goal, goal_revision, limits) -> dict`（含 `provided_knowledge` 与截断说明）。
-- `build_messages(context)`、`SYSTEM_PROMPT`。
+- `build_context(*, observation, abilities, candidates, experiences, last_result,
+  recent_results, budget, long_term_goal, goal_revision, limits, now) -> dict`
+  （含 `provided_knowledge` 与截断说明）。`recent_actions` 是最近 8 条动作摘要
+  （最新在前，含状态/原因/多少秒前），`recent_failures` 是其中失败/未知/拦截的前 3 条。
+- `build_messages(context, *, include_completion=False)`、`build_system_prompt(*, include_completion=False)`、
+  `SYSTEM_PROMPT`。默认提示词不含 `completion` 字段：完成只由能力的前后观察验证；
+  `include_completion=True`（配置 `model_completion_enabled`）才把模型判据纳入结算。
 - `parse_decision(payload, *, observation, validate_params, model)`：非法/未知能力/非法判据
   抛 `Rejected`；决策绑定“我们给的观察”。
 - `validate(predicate)` / `validate_all` / `evaluate` / `evaluate_all`：只允许
@@ -101,7 +109,8 @@
 
 - `ExperienceStore(path=":memory:", *, clock, encoder)`：
   - 事件：`append_event(event)`、`record_action(result, *, save_key, session, goal,
-    decision, source)`、`event(id)`、`events_for_save(save_key, *, kind, limit)`。
+    decision, source)`、`event(id)`、`events_for_save(save_key, *, kind, limit)`、
+    `recent_actions(save_key, *, limit=8)`（最近动作摘要，最新在前，供重启后补读）。
   - 经验：`add_experience(...)`、`add_evidence(id, event_id, counterexample=False)`、
     `set_experience_status(id, status, note="")`、`experience(id)`、
     `evidence_counts(id)`、`recall(query, *, save_key, limit, include_candidates,
@@ -111,6 +120,9 @@
     `active_skills()`、`skill(id, version=None)`、`list_skills()`。
   - 地图/事实：`record_tiles(...)`、`known_tiles(save_key, location)`、`record_link(...)`、
     `links(save_key)`、`set_fact(...)`、`get_fact(...)`、`summary()`。
+  - 统计：`action_stats(*, save_key=None, since_ts=None)`：聚合全部历史行动，
+    `attempts = executed + blocked`，返回 `ratios`（以 attempts 为分母）、
+    `failure_ratio_executed`、`by_ability` 与 `summary_line`。
 - `validate_skill(definition, *, ability_versions=None)`、`build_skill(...)`。
 - `evaluate_promotion(runs, *, required_successes=3)`、`handle_failure(...)`。
 
@@ -126,9 +138,11 @@
 
 ## runtime
 
-- `RunBudget(*, wall_clock_seconds, model_requests, clock)`：`start/elapsed/
-  remaining_seconds/requests_left/expire_reason/require/consume_model_request/
-  record_tokens/snapshot`。
+- `RunBudget(*, wall_clock_seconds, model_requests, min_interval_seconds=0, clock)`：
+  `start/elapsed/remaining_seconds/requests_left/expire_reason/require/
+  next_request_delay/consume_model_request/record_tokens/snapshot`。
+  `next_request_delay()` 返回距下次允许请求的秒数（0 表示可以立即请求），
+  由运行时 `await sleep` 后再扣减请求数。
 - `ActionOwnership(*, clock)`：`acquire(owner, action_id)`、`release(lease)`、
   `force_release()`、`current`。
 - `StopSignal()` / `StopFile(path)`：`reason()`、`request(reason)`、`clear()`。
@@ -138,16 +152,20 @@
   打印失败会自我停用，不影响运行。
 - `AgentLoop(*, observe, request_decision, build_delegation, budget, ownership, recorder,
   guard, premises, action_key, context_key, stop, poll_seconds, step_interval_seconds,
-  idle_log_seconds, clock).run(max_actions=None) -> LoopSummary`。
+  recent_history_limit=8, idle_log_seconds, clock).run(max_actions=None) -> LoopSummary`。
+  `request_decision(observation, last_result, recent_actions)` 在委托结算后调用；
+  `recent_actions` 由 `_remember` 维护（最新在前），包含 failed/unknown/blocked。
 
 ## cli
 
-- `AgentConfig(...)`：预算与限频必填；字段校验在 `__post_init__`；`console_output` 控制实时输出。
+- `AgentConfig(...)`：预算与限频必填；字段校验在 `__post_init__`；`console_output` 控制实时输出；
+  `repeat_exempt_abilities` 是限频白名单（能力 id 元组，可选，默认空）；
+  `model_request_interval_seconds` 是两次模型请求的最小间隔（秒，0 表示不限制）。
 - `config_from_mapping(data, *, base_dir)`、`load_config(path, *, overrides)`。
 - `build_runtime(...)`、`run_agent(config, *, max_actions, bridge, model, fishing_port,
   observe, store, include_fishing, console)`、`status_report(config)`、
   `export_evidence(config, out, *, event_limit)`、`doctor_report(config, *,
   probe_bridge, timeout)`、`write_state(path, payload)`。
-- `main(argv=None) -> int`；子命令 `run/status/stop/doctor/export/skills`；
-  `run --quiet` 关闭实时控制台输出。
+- `main(argv=None) -> int`；子命令 `run/status/stop/doctor/export/stats/skills`；
+  `run --quiet` 关闭实时控制台输出；`stats` 输出行动拦截/失败占比（`--days`、`--save-key`）。
 

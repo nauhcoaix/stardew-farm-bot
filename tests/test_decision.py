@@ -9,6 +9,7 @@ from stardew_agent.decision import (
     ContextLimits,
     PredicateError,
     build_context,
+    build_messages,
     check_freshness,
     evaluate,
     evaluate_all,
@@ -156,3 +157,61 @@ def test_上下文截断会报告数量与排序():
     assert context["trimmed"]["entities"]["dropped"] == 3
     assert "距离" in context["trimmed"]["entities"]["order"]
     assert context["provided_knowledge"]
+
+
+def test_上下文包含最近动作与失败摘要():
+    observation = observe()
+    recent = [
+        {
+            "ability": "use",
+            "params": {"target": "@s1:e1"},
+            "state": "failed",
+            "detail": "判据未满足",
+            "progress": False,
+            "goal": "浇水",
+            "recorded_at": 900.0,
+        },
+        {
+            "ability": "move_to",
+            "params": {"x": 1, "y": 2},
+            "state": "completed",
+            "detail": "到达",
+            "progress": True,
+            "goal": "走过去",
+            "recorded_at": 990.0,
+        },
+    ]
+    context = build_context(observation=observation, recent_results=recent, now=1000.0)
+    assert [row["state"] for row in context["recent_actions"]] == ["failed", "completed"]
+    assert context["recent_actions"][0]["seconds_ago"] == 100
+    assert context["recent_actions"][1]["seconds_ago"] == 10
+    assert len(context["recent_failures"]) == 1
+    assert context["recent_failures"][0]["ability"] == "use"
+    assert '"target": "@s1:e1"' in context["recent_actions"][0]["params"]
+
+
+def test_最近动作按上限截断():
+    observation = observe()
+    recent = [
+        {"ability": "a%d" % index, "state": "completed", "detail": "", "recorded_at": 100.0 + index}
+        for index in range(5)
+    ]
+    context = build_context(
+        observation=observation,
+        recent_results=recent,
+        limits=ContextLimits(max_recent_actions=2),
+        now=200.0,
+    )
+    assert [row["ability"] for row in context["recent_actions"]] == ["a0", "a1"]
+
+
+def test_默认提示词不要求模型写完成判据():
+    system = build_messages({"player": {}})[0]["content"]
+    assert "completion" not in system
+    assert "stop_conditions" in system
+
+
+def test_开启开关后提示词才出现完成判据():
+    system = build_messages({"player": {}}, include_completion=True)[0]["content"]
+    assert "completion" in system
+    assert "判据不成立时该次动作会被判为失败" in system

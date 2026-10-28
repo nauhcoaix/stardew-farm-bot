@@ -12,7 +12,7 @@ from .context import DEFAULT_LONG_TERM_GOAL, ContextLimits, build_context
 from .freshness import Freshness, check as check_freshness
 from .parse import DecisionError, ParamsValidator, parse_decision
 from .predicates import Evaluation, PredicateError, evaluate, evaluate_all, validate, validate_all
-from .prompt import SYSTEM_PROMPT, build_messages
+from .prompt import SYSTEM_PROMPT, build_messages, build_system_prompt
 
 __all__ = [
     "ContextLimits",
@@ -25,6 +25,7 @@ __all__ = [
     "SYSTEM_PROMPT",
     "build_context",
     "build_messages",
+    "build_system_prompt",
     "check_freshness",
     "evaluate",
     "evaluate_all",

@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -39,6 +40,20 @@ def _add_budget(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--requests", type=int, help="本次运行模型请求上限")
     parser.add_argument("--repeat-window", type=float, help="同一动作限频窗口（秒）")
     parser.add_argument("--repeat-max", type=int, help="同一动作累计执行上限")
+    parser.add_argument(
+        "--model-interval",
+        type=float,
+        help="两次模型请求之间的最小间隔（秒），0 表示不限制",
+    )
+    parser.add_argument(
+        "--model-completion",
+        action="store_true",
+        help="采用模型提出的 completion 判据（默认不使用，仅由能力验证成败）",
+    )
+    parser.add_argument(
+        "--repeat-exempt",
+        help="限频白名单：逗号分隔的能力 id（例如 select_item），这些能力不参与限频",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--out", type=Path, required=True, help="输出 JSON 路径")
     export.add_argument("--event-limit", type=int, default=5000)
 
+    stats = sub.add_parser("stats", help="统计历史行动的拦截/失败占比")
+    _add_common(stats)
+    _add_budget(stats)
+    stats.add_argument("--save-key", help="只统计某个存档（默认全部存档）")
+    stats.add_argument("--days", type=float, help="只统计最近 N 天（默认全部历史）")
+
     skills = sub.add_parser("skills", help="查看或停用组合技能")
     _add_common(skills)
     _add_budget(skills)
@@ -91,12 +112,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _split_exempt(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    names = [part.strip() for part in value.split(",") if part.strip()]
+    return names or None
+
+
 def _overrides(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "budget_seconds": getattr(args, "seconds", None),
         "budget_requests": getattr(args, "requests", None),
         "repeat_window_seconds": getattr(args, "repeat_window", None),
         "repeat_max_runs": getattr(args, "repeat_max", None),
+        "model_request_interval_seconds": getattr(args, "model_interval", None),
+        "model_completion_enabled": True if getattr(args, "model_completion", False) else None,
+        "repeat_exempt_abilities": _split_exempt(getattr(args, "repeat_exempt", None)),
         "long_term_goal": getattr(args, "goal", None),
         "snapshot_radius": getattr(args, "radius", None),
         "poll_seconds": getattr(args, "poll", None),
@@ -147,6 +178,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "export":
             _print(wiring.export_evidence(config, args.out, event_limit=args.event_limit))
             return 0
+        if args.command == "stats":
+            _print(_stats_payload(config, args))
+            return 0
         if args.command == "skills":
             return _skills_command(config, args)
         raise ConfigError("未知命令：%s" % args.command)
@@ -156,6 +190,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print("文件不存在：%s" % exc, file=sys.stderr)
         return 2
+
+
+def _stats_payload(config: AgentConfig, args: argparse.Namespace) -> dict:
+    """聚合历史行动的拦截/失败占比；不启动游戏、不请求模型。"""
+    if not Path(config.experience_db).exists():
+        return {
+            "attempts": 0,
+            "executed": 0,
+            "blocked": 0,
+            "reason": "经验库还不存在",
+            "summary_line": "行动 0 次",
+        }
+    store = ExperienceStore(config.experience_db)
+    try:
+        since = time.time() - args.days * 86400 if getattr(args, "days", None) else None
+        return store.action_stats(save_key=getattr(args, "save_key", None), since_ts=since)
+    finally:
+        store.close()
 
 
 def _skills_command(config: AgentConfig, args: argparse.Namespace) -> int:

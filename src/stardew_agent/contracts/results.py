@@ -63,6 +63,19 @@ class ActionResult:
         """结果已确定？``unknown`` 不是确定结果。"""
         return self.state in ("completed", "failed", "cancelled")
 
+    def to_brief(self, *, goal: str = "", recorded_at: float | None = None) -> dict:
+        """给模型看的精简历史条目（不带完整证据，避免上下文膨胀）。"""
+        return {
+            "ability": self.ability,
+            "params": dict(self.params),
+            "state": self.state,
+            "detail": self.detail,
+            "progress": self.progress,
+            "error": self.error,
+            "goal": goal,
+            "recorded_at": recorded_at,
+        }
+
     def to_dict(self) -> dict:
         return {
             "schema_version": self.schema_version,

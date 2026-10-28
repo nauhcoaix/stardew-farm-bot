@@ -21,6 +21,9 @@ REQUIRED_KEYS = (
     "repeat_max_runs",
 )
 KNOWN_KEYS = REQUIRED_KEYS + (
+    "repeat_exempt_abilities",
+    "model_request_interval_seconds",
+    "model_completion_enabled",
     "bridge_endpoint",
     "snapshot_radius",
     "game_path",
@@ -46,6 +49,9 @@ class AgentConfig:
     budget_requests: int
     repeat_window_seconds: float
     repeat_max_runs: int
+    model_request_interval_seconds: float = 0.0
+    model_completion_enabled: bool = False
+    repeat_exempt_abilities: tuple[str, ...] = ()
     bridge_endpoint: str = "ws://127.0.0.1:17654/"
     snapshot_radius: int = 8
     game_path: Path = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley")
@@ -70,6 +76,10 @@ class AgentConfig:
             raise ConfigError("repeat_window_seconds 不能为负数")
         if self.repeat_max_runs < 1:
             raise ConfigError("repeat_max_runs 至少为 1")
+        if not 0 <= self.model_request_interval_seconds <= 3600:
+            raise ConfigError("model_request_interval_seconds 应在 0～3600 秒（0 表示不限制）")
+        if any(not isinstance(name, str) or not name.strip() for name in self.repeat_exempt_abilities):
+            raise ConfigError("repeat_exempt_abilities 只能包含非空能力 id")
         if not 1 <= self.snapshot_radius <= 24:
             raise ConfigError("snapshot_radius 应在 1～24")
         if not 0.05 <= self.poll_seconds <= 10:
@@ -90,6 +100,9 @@ class AgentConfig:
             "budget_requests": self.budget_requests,
             "repeat_window_seconds": self.repeat_window_seconds,
             "repeat_max_runs": self.repeat_max_runs,
+            "model_request_interval_seconds": self.model_request_interval_seconds,
+            "model_completion_enabled": self.model_completion_enabled,
+            "repeat_exempt_abilities": list(self.repeat_exempt_abilities),
             "bridge_endpoint": self.bridge_endpoint,
             "snapshot_radius": self.snapshot_radius,
             "experience_db": str(self.experience_db),
@@ -125,11 +138,28 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path | None = None
             raise ConfigError("console_output 必须是 true 或 false")
         console_output = value
 
+    model_completion = False
+    if "model_completion_enabled" in data:
+        value = data["model_completion_enabled"]
+        if not isinstance(value, bool):
+            raise ConfigError("model_completion_enabled 必须是 true 或 false")
+        model_completion = value
+
+    exempt_raw = data.get("repeat_exempt_abilities", ())
+    if isinstance(exempt_raw, str) or not isinstance(exempt_raw, (list, tuple)):
+        raise ConfigError("repeat_exempt_abilities 必须是字符串数组，例如 [\"select_item\"]")
+    exempt = tuple(name.strip() for name in exempt_raw if isinstance(name, str) and name.strip())
+    if len(exempt) != len(exempt_raw):
+        raise ConfigError("repeat_exempt_abilities 只能包含非空字符串")
+
     return AgentConfig(
         budget_seconds=float(data["budget_seconds"]),
         budget_requests=int(data["budget_requests"]),
         repeat_window_seconds=float(data["repeat_window_seconds"]),
         repeat_max_runs=int(data["repeat_max_runs"]),
+        model_request_interval_seconds=float(data.get("model_request_interval_seconds") or 0.0),
+        model_completion_enabled=model_completion,
+        repeat_exempt_abilities=exempt,
         bridge_endpoint=str(data.get("bridge_endpoint") or "ws://127.0.0.1:17654/"),
         snapshot_radius=int(data.get("snapshot_radius") or 8),
         game_path=path_of("game_path") or AgentConfig.__dataclass_fields__["game_path"].default,

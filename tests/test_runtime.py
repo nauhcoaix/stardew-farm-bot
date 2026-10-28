@@ -58,11 +58,12 @@ class FakeDelegation:
 
 
 class Harness:
-    def __init__(self, decisions, *, requests=None, guard=None, observes=None, progresses=None):
+    def __init__(self, decisions, *, requests=None, guard=None, observes=None, progresses=None, use_model_completion=False):
         self.observations = observe(x=10, y=10)
         self._pending = list(decisions)
         self.delegations: list[FakeDelegation] = []
         self.builds = 0
+        self.seen_recent: list = []
         self.stop = StopSignal()
         self.budget = RunBudget(
             wall_clock_seconds=30, model_requests=requests if requests is not None else max(6, len(self._pending) + 4)
@@ -82,18 +83,20 @@ class Harness:
             stop=self.stop,
             poll_seconds=0.001,
             step_interval_seconds=0.001,
+            use_model_completion=use_model_completion,
             idle_log_seconds=0.0,
         )
 
     async def observe(self):
         return self.observations
 
-    async def decide(self, observation, last_result):
+    async def decide(self, observation, last_result, recent_results=()):
+        self.seen_recent = list(recent_results)
         if not self._pending:
             return None
         item = self._pending.pop(0)
         if callable(item):
-            return await item(self, observation, last_result)
+            return await item(self, observation, last_result, recent_results)
         if isinstance(item, dict):
             # 与真实接线一致：决策必须绑定本次提供的观察。
             return parse_decision(
@@ -183,12 +186,25 @@ def test_模型判据能否决自报完成():
             )
         ],
         requests=6,
+        use_model_completion=True,
     )
     summary = asyncio.run(harness.run(max_actions=1))
     assert summary.failed == 1
     result = summary.last_result
     assert result is not None
     assert result["evidence"]["completion_predicate"]["met"] is False
+
+
+def test_默认忽略模型自报的完成判据():
+    harness = Harness(
+        [decision_payload(completion={"path": "player.position.x", "op": "==", "value": 99})],
+        requests=6,
+    )
+    summary = asyncio.run(harness.run(max_actions=1))
+    assert summary.completed == 1
+    started = [event for event in harness.recorder.events if event.kind == "action_started"][0]
+    assert started.payload["completion_ignored"] is True
+    assert started.payload["completion"] is None
 
 
 def test_停止会取消在途委托并释放控制():
@@ -241,7 +257,7 @@ def test_没有可执行委托时记录等待而不是擅自开新任务():
 
 
 def test_停止会取消在途决策请求():
-    async def slow_decision(harness, observation, last_result):
+    async def slow_decision(harness, observation, last_result, recent_results=()):
         harness.stop.request("模型还在思考")
         await asyncio.sleep(5)
         return None
@@ -274,7 +290,7 @@ def test_旧ref会在执行前改绑为坐标():
     harness = Harness([], requests=8)
     harness.observations = old
 
-    async def decide(harness_ref, observation, last_result):
+    async def decide(harness_ref, observation, last_result, recent_results=()):
         # 模型思考期间现场又观察了几次：ref 已经换成 @s2 前缀。
         harness_ref.observations = new
         return parse_decision(
@@ -293,4 +309,73 @@ def test_旧ref会在执行前改绑为坐标():
     assert params.get("x") == 12 and params.get("y") == 10
     assert "near" not in params
     assert "decision_rebound" in kinds(harness.recorder)
+
+
+def test_限频白名单内的能力可以连续下发():
+    guard = RepeatGuard(
+        RepeatPolicy(window_seconds=0, max_runs=1, exempt_abilities=frozenset({"select_item"}))
+    )
+    payload = decision_payload(ability="select_item", params={"slot": 1}, goal="切到第 2 格")
+    harness = Harness([dict(payload), dict(payload)], requests=8, guard=guard)
+    summary = asyncio.run(harness.run(max_actions=2))
+    assert summary.actions == 2
+    assert summary.blocked == 0
+    assert "repeat_blocked" not in kinds(harness.recorder)
+
+
+def test_未列入白名单的能力仍被限频():
+    guard = RepeatGuard(
+        RepeatPolicy(window_seconds=0, max_runs=1, exempt_abilities=frozenset({"select_item"}))
+    )
+    payload = decision_payload(ability="move_to", params={"x": 11, "y": 10})
+    harness = Harness([dict(payload), dict(payload)], requests=8, guard=guard)
+    summary = asyncio.run(harness.run(max_actions=2))
+    assert summary.actions == 1
+    assert summary.blocked == 1
+    assert "repeat_blocked" in kinds(harness.recorder)
+
+
+def test_模型请求最小间隔():
+    clock = {"now": 0.0}
+    budget = RunBudget(
+        wall_clock_seconds=60,
+        model_requests=5,
+        min_interval_seconds=5,
+        clock=lambda: clock["now"],
+    )
+    assert budget.next_request_delay() == 0.0
+    budget.consume_model_request()
+    assert budget.next_request_delay() == 5.0
+    clock["now"] = 3.0
+    assert budget.next_request_delay() == 2.0
+    clock["now"] = 5.0
+    assert budget.next_request_delay() == 0.0
+    assert budget.snapshot()["min_interval_seconds"] == 5.0
+
+
+def test_模型请求按最小间隔等待():
+    harness = Harness([decision_payload(), decision_payload()], requests=8)
+    harness.budget = RunBudget(wall_clock_seconds=30, model_requests=8, min_interval_seconds=0.05)
+    harness.loop.budget = harness.budget
+    summary = asyncio.run(harness.run(max_actions=2))
+    assert summary.actions == 2
+    assert "model_rate_limited" in kinds(harness.recorder)
+    waits = [
+        event.payload["wait_seconds"] for event in harness.recorder.events if event.kind == "model_rate_limited"
+    ]
+    assert waits and all(0 < wait <= 0.05 for wait in waits)
+
+
+def test_失败动作会进入下一次决策的历史():
+    harness = Harness(
+        [decision_payload(), decision_payload()],
+        requests=8,
+        progresses=[Progress("failed", "判据未满足")],
+    )
+    summary = asyncio.run(harness.run(max_actions=2))
+    assert summary.failed == 2
+    assert harness.seen_recent, "第二次决策应能看到第一次动作的结果"
+    assert any(row["state"] == "failed" for row in harness.seen_recent)
+    assert any("判据未满足" in row["detail"] for row in harness.seen_recent)
+    assert harness.seen_recent[0]["ability"] == "move_to"
 
