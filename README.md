@@ -212,6 +212,11 @@ stardew-agent skills --config config.json retire --id skill:xxx --reason "前提
 - `expose_mechanics` 默认 `false`：`use` / `select_item` 是 `farm_routine` 的内部动作，
   不出现在模型能力目录里，模型写了也会被 `parse_decision` 拒绝；
   `start-agent.bat run --expose-mechanics` 仅供调试或与旧行为对比。
+- `max_notable_entities` 控制每次请求最多列出多少个非地块实体（默认 40，1～120）。
+  地块压成 `observation.tiles` 通行网格，实体只保留非默认字段，另给
+  `observation.entity_counts`（可锄/需浇/可收/可装水数量）。实测真实农场（半径 8）：
+  默认压缩约 16.4k 字符（≈5–6k tokens），旧的全量视图约 31.7k 字符（≈9–11k tokens）；
+  调到 24 约 14.1k 字符。可用 `start-agent.bat run --max-notable-entities 24` 临时覆盖。
 - `model.json` 支持 `api_key` / `apiKey`，占位符（`your-key` 等）会被拒绝。
 
 密钥不会进入日志、状态文件或证据导出。

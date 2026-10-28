@@ -23,8 +23,12 @@ from .base import AbilitySpec, DelegationBase, PremiseCheck, reject_unknown_para
 #: 例行程序支持的任务；``auto`` 由现场目标决定
 TASKS = ("auto", "water", "till", "harvest", "plant", "refill")
 
-#: 任务对应的 ``use`` 预期效果
-EXPECT = {"water": "water", "till": "till", "harvest": "harvest", "plant": "plant", "refill": "any"}
+#: 每个任务用哪个底层能力。收菜是“把作物拿起来”，必须用 interact：
+#: 桥的 use 只会挥动当前手持工具/种子，用镰刀之类的工具会毁掉作物。
+ABILITY = {"water": "use", "till": "use", "plant": "use", "refill": "use", "harvest": "interact"}
+
+#: use 任务对应的预期效果（interact 不需要）
+EXPECT = {"water": "water", "till": "till", "plant": "plant", "refill": "any"}
 
 #: 任务需要的工具（按 inventory 的 tool 字段或名称匹配，全部小写）
 TOOL_HINTS = {
@@ -314,7 +318,11 @@ class FarmRoutineDelegation(DelegationBase):
             if ref is None:
                 self._mark_failed(target, "目标已不在当前观察范围")
                 return None
-            self._start("use", {"target": ref, "expect": EXPECT[self.task]}, target, observation)
+            ability = ABILITY[self.task]
+            params: dict[str, Any] = {"target": ref}
+            if ability == "use":
+                params["expect"] = EXPECT[self.task]
+            self._start(ability, params, target, observation)
             return None
         if progress.state == "completed":
             tile = target.get("tile") or {}

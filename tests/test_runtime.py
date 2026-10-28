@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from stardew_agent.contracts.decision import AbilityCall
-from stardew_agent.contracts.errors import BudgetExhausted, ConfigError, OwnershipBusy
+from stardew_agent.contracts.errors import BudgetExhausted, ConfigError, OwnershipBusy, Rejected
 from stardew_agent.contracts.results import Progress
 from stardew_agent.decision import parse_decision
 from stardew_agent.repeat_guard import RepeatGuard, RepeatPolicy
@@ -176,6 +176,21 @@ def test_结果未知会被如实记录():
     finished = [event for event in harness.recorder.events if event.kind == "action_finished_unknown"]
     assert finished and finished[0].status == "unknown"
     assert harness.recorder.metrics()["unknown_results"] == 1
+
+
+def test_解析层拒绝会写进给模型看的历史():
+    async def decide(harness, observation, last_result, recent_results=()):
+        if getattr(decide, "first", True):
+            decide.first = False
+            error = Rejected("能力 use 是底层机械动作，不直接对模型开放")
+            error.ability = "use"
+            raise error
+        return make_decision(observation, ability=None, params={}, goal="等待观察")
+
+    harness = Harness([decide], requests=3)
+    asyncio.run(harness.run())
+    assert any(row["state"] == "blocked" and row["ability"] == "use" for row in harness.seen_recent)
+    assert any("底层机械动作" in row["detail"] for row in harness.seen_recent)
 
 
 def test_模型判据能否决自报完成():

@@ -9,6 +9,9 @@
 * 项目主动提供的知识（能力目录、字段含义、长期目标文字）。
 
 不注入每日日程、作物优先级、固定任务路线或攻略解法。
+
+为控制 token：默认把地块压成一张通行网格（``observation.tiles``），实体列表只保留
+非地块实体（NPC/对象/耕地/水源/门/家具等），每条只留非默认字段；候选只给 id/ref/坐标。
 """
 
 from __future__ import annotations
@@ -24,6 +27,25 @@ from ..contracts.observation import Observation
 #: 长期目标默认文字（用户可改）。它不自动变成固定日程或利润目标。
 DEFAULT_LONG_TERM_GOAL = "在用户约束和预算内了解世界、学会独立生活，积累能够验证和复用的经验。"
 
+#: 地块本身就是“默认值”，不逐条列给模型；它们由通行网格表示
+_PLAIN_KINDS = frozenset({"tile"})
+
+#: 只有为真时才写出的布尔字段（false 就是默认，省略）
+_FLAG_FIELDS = (
+    "diggable",
+    "refillable",
+    "needsWater",
+    "tilled",
+    "watered",
+    "harvestable",
+    "cropDead",
+    "ready",
+    "stump",
+)
+
+#: 有值时才写出的字段
+_EXTRA_FIELDS = ("crop", "cropPhase", "terrain", "objType", "objName", "action", "health", "growthStage")
+
 
 @dataclass(frozen=True)
 class ContextLimits:
@@ -34,6 +56,10 @@ class ContextLimits:
     max_experiences: int = 8
     max_menu_options: int = 12
     max_recent_actions: int = 8
+    #: 地块压成网格 + 实体只留非默认字段（关掉可回到旧的全量行为，便于对比）
+    compact_entities: bool = True
+    #: 压缩模式下最多列出多少个非地块实体
+    max_notable_entities: int = 40
 
 
 def _distance(origin: Mapping[str, Any], entity: Mapping[str, Any]) -> int:
@@ -45,17 +71,91 @@ def _distance(origin: Mapping[str, Any], entity: Mapping[str, Any]) -> int:
     return abs(int(x) - int(ox)) + abs(int(y) - int(oy))
 
 
+def _is_notable(entity: Mapping[str, Any]) -> bool:
+    """值得单独列出的实体：不是普通地块，或地块上挂着交互/作物。"""
+    kind = entity.get("kind")
+    if kind and kind not in _PLAIN_KINDS:
+        return True
+    return any(entity.get(key) for key in ("action", "crop", "objName", "terrain"))
+
+
+def _compact_row(entity: Mapping[str, Any]) -> dict:
+    """一条实体里只保留非默认字段。"""
+    row: dict[str, Any] = {"ref": entity.get("ref"), "kind": entity.get("kind"), "tile": entity.get("tile")}
+    if entity.get("name") and entity.get("kind") not in _PLAIN_KINDS:
+        row["name"] = entity.get("name")
+    for key in _FLAG_FIELDS:
+        if entity.get(key):
+            row[key] = entity.get(key)
+    for key in _EXTRA_FIELDS:
+        value = entity.get(key)
+        if value is not None and value != "" and value is not False:
+            row[key] = value
+    if entity.get("passable") is False:
+        row["passable"] = False
+    return row
+
+
+def _passable_grid(observation: Observation) -> dict | None:
+    """把本次观察到的地块压成按行字符串：``.`` 可通行、``#`` 阻挡、``?`` 未知。"""
+    cells: dict[tuple[int, int], str] = {}
+    for entity in observation.entities:
+        tile = entity.get("tile") or {}
+        x, y = tile.get("x"), tile.get("y")
+        if not isinstance(x, int) or not isinstance(y, int):
+            continue
+        passable = entity.get("passable")
+        cells[(x, y)] = "." if passable is True else "#" if passable is False else "?"
+    if not cells:
+        return None
+    xs = [point[0] for point in cells]
+    ys = [point[1] for point in cells]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    rows = [
+        "".join(cells.get((x, y), " ") for x in range(min_x, max_x + 1))
+        for y in range(min_y, max_y + 1)
+    ]
+    return {
+        "origin": {"x": min_x, "y": min_y},
+        "rows": rows,
+        "legend": {".": "可通行", "#": "阻挡", "?": "未知", " ": "未观察"},
+    }
+
+
+def _entity_counts(observation: Observation) -> dict:
+    counts = {"diggable": 0, "needsWater": 0, "harvestable": 0, "refillable": 0, "notable": 0}
+    for entity in observation.entities:
+        for key in ("diggable", "needsWater", "harvestable", "refillable"):
+            if entity.get(key) is True:
+                counts[key] += 1
+        if _is_notable(entity):
+            counts["notable"] += 1
+    return counts
+
+
 def _trim_entities(
     observation: Observation, limits: ContextLimits
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], dict, dict | None, dict]:
     origin = observation.position()
     rows = sorted(observation.entities, key=lambda entity: _distance(origin, entity))
-    kept = [dict(entity) for entity in rows[: limits.max_entities]]
-    return kept, {
+    counts = _entity_counts(observation)
+    if not limits.compact_entities:
+        kept = [dict(entity) for entity in rows[: limits.max_entities]]
+        return kept, {
+            "kept": len(kept),
+            "dropped": max(0, len(rows) - len(kept)),
+            "order": "按与人物距离升序；被丢弃的只是上下文预算，不是世界的一部分",
+        }, None, counts
+
+    notable = [entity for entity in rows if _is_notable(entity)]
+    kept = [_compact_row(entity) for entity in notable[: limits.max_notable_entities]]
+    trim = {
         "kept": len(kept),
-        "dropped": max(0, len(rows) - len(kept)),
-        "order": "按与人物距离升序；被丢弃的只是上下文预算，不是世界的一部分",
+        "dropped": max(0, len(notable) - len(kept)),
+        "compacted": True,
+        "order": "非地块实体按与人物距离升序；地块改由 tiles 网格表示",
     }
+    return kept, trim, _passable_grid(observation), counts
 
 
 def _recent_rows(rows: Iterable[Mapping[str, Any]], limit: int, now: float) -> list[dict]:
@@ -82,6 +182,33 @@ def _recent_rows(rows: Iterable[Mapping[str, Any]], limit: int, now: float) -> l
     return out
 
 
+def _compact_candidates(candidates: Mapping[str, Any]) -> dict:
+    """候选只留“去哪/点谁”必需的信息：完整实体与前沿明细不重复塞。"""
+    items = []
+    for row in candidates.get("items") or []:
+        item = {
+            "id": row.get("id"),
+            "mode": row.get("mode"),
+            "kind": row.get("kind"),
+            "ref": row.get("ref"),
+            "tile": row.get("tile"),
+        }
+        target = row.get("target") or {}
+        if isinstance(target, Mapping) and target.get("name"):
+            item["name"] = target.get("name")
+        items.append({key: value for key, value in item.items() if value is not None})
+    frontier = candidates.get("frontier") or {}
+    out: dict[str, Any] = {"items": items, "truncated": candidates.get("truncated")}
+    if frontier:
+        out["frontier"] = {"considered": frontier.get("considered"), "truncated": frontier.get("truncated")}
+    if candidates.get("interaction_count") is not None:
+        out["interaction_count"] = candidates.get("interaction_count")
+    for key in ("order", "more"):
+        if candidates.get(key):
+            out[key] = candidates.get(key)
+    return out
+
+
 def build_context(
     *,
     observation: Observation,
@@ -98,7 +225,7 @@ def build_context(
 ) -> dict:
     """组装一份可序列化的决策上下文。"""
     limits = limits or ContextLimits()
-    entities, entity_trim = _trim_entities(observation, limits)
+    entities, entity_trim, tiles, counts = _trim_entities(observation, limits)
     inventory = [dict(item) for item in observation.inventory[: limits.max_inventory]]
     experiences = list(experiences)[: limits.max_experiences]
     recent = _recent_rows(recent_results, limits.max_recent_actions, time.time() if now is None else now)
@@ -108,28 +235,33 @@ def build_context(
         options = list(menu.get("options") or [])[: limits.max_menu_options]
         menu = dict(menu, options=options, options_dropped=max(0, len(menu.get("options") or []) - len(options)))
 
+    observe_view: dict[str, Any] = {
+        "save_key": observation.save_key,
+        "session": observation.session,
+        "snapshot_id": observation.snapshot_id,
+        "sampled_at": observation.sampled_at,
+        "location": observation.location,
+        "game_time": dict(observation.game_time),
+        "player": dict(observation.player),
+        "inventory": inventory,
+        "inventory_dropped": max(0, len(observation.inventory) - len(inventory)),
+        "entities": entities,
+        "entity_counts": counts,
+        "scope": dict(observation.scope),
+        "menu": menu,
+        "unknowns": dict(observation.unknowns),
+        "source": observation.source,
+    }
+    if tiles is not None:
+        observe_view["tiles"] = tiles
+
     context: dict[str, Any] = {
         "long_term_goal": long_term_goal,
         "goal_revision": goal_revision,
-        "observation": {
-            "save_key": observation.save_key,
-            "session": observation.session,
-            "snapshot_id": observation.snapshot_id,
-            "sampled_at": observation.sampled_at,
-            "location": observation.location,
-            "game_time": dict(observation.game_time),
-            "player": dict(observation.player),
-            "inventory": inventory,
-            "inventory_dropped": max(0, len(observation.inventory) - len(inventory)),
-            "entities": entities,
-            "scope": dict(observation.scope),
-            "menu": menu,
-            "unknowns": dict(observation.unknowns),
-            "source": observation.source,
-        },
+        "observation": observe_view,
         "trimmed": {"entities": entity_trim},
         "abilities": [descriptor.to_dict() for descriptor in abilities],
-        "candidates": dict(candidates or {}),
+        "candidates": _compact_candidates(candidates or {}),
         "experiences": experiences,
         "recent_actions": recent,
         "recent_failures": failures,
@@ -137,9 +269,14 @@ def build_context(
         "budget": dict(budget or {}),
         "provided_knowledge": [
             "能力目录：能力 id、参数、观察需求、真实前提、完成判据",
+            "observation.tiles：按行字符串表示的可通行网格，origin 是左上角坐标；"
+            ". 可通行 / # 阻挡 / ? 未知 / 空格 未观察",
+            "observation.entity_counts：现场可锄地/需浇水/可收获/可装水的数量"
+            "（实体列表只列非地块实体，避免重复）",
             "观察字段含义：可通行/可耕/需浇水等是游戏桥提供的结构化属性",
             "ref 的时效：ref 只在单次快照内有效；坐标与 target_id 跨快照稳定",
-            "recent_actions：最近几次动作的真实状态（成功/失败/未知/拦截）与原因",
+            "recent_actions：最近几次动作的真实状态（成功/失败/未知/拦截）与原因；"
+            "state=blocked 表示执行器没下发，原样重发只会再次被拦",
             "长期目标文字（用户可修改）",
         ],
     }

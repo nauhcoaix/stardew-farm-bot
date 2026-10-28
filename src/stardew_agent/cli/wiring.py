@@ -196,7 +196,10 @@ def make_decider(
         last_result: ActionResult | None,
         recent_results: Sequence[Mapping[str, Any]] = (),
     ) -> Decision | None:
-        limits = ContextLimits(max_entities=config.max_context_entities)
+        limits = ContextLimits(
+            max_entities=config.max_context_entities,
+            max_notable_entities=config.max_notable_entities,
+        )
         recent = list(recent_results)
         if not recent and observation.save_key:
             # 重启后内存历史为空：从证据库补读，让模型仍能看到之前的失败。

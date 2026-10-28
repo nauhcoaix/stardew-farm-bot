@@ -10,6 +10,7 @@
 
   "bridge_endpoint": "ws://127.0.0.1:17654/",
   "snapshot_radius": 8,
+  "max_notable_entities": 40,
 
   "game_path": "C:/Program Files (x86)/Steam/steamapps/common/Stardew Valley",
   "fishing_runtime": null,

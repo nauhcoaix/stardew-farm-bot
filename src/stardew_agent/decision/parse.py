@@ -24,6 +24,13 @@ class DecisionError(Rejected):
     code = "DECISION"
 
 
+def _rejected(message: str, ability: str = "") -> Rejected:
+    """拒绝模型决策时带上能力 id，运行环境才能把它写进给模型看的历史。"""
+    error = Rejected(message)
+    error.ability = ability
+    return error
+
+
 def parse_decision(
     payload: Mapping[str, Any] | None,
     *,
@@ -60,7 +67,10 @@ def parse_decision(
             raise DecisionError("params 必须是对象")
         params = dict(params)
         if validate_params is not None:
-            params = dict(validate_params(ability, params))
+            try:
+                params = dict(validate_params(ability, params))
+            except Rejected as exc:
+                raise _rejected("能力 %s 不被接受：%s" % (ability, exc), ability) from exc
         call = AbilityCall(ability=ability, params=params)
 
     return Decision(

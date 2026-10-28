@@ -148,6 +148,7 @@ class AgentLoop:
         self._halted: str | None = None
         self._observation_at = 0.0
         self._recent: deque[dict] = deque(maxlen=max(1, int(recent_history_limit)))
+        self._no_action_streak = 0
 
     # ---- 对外入口 -------------------------------------------------
     async def run(self, *, max_actions: int | None = None) -> LoopSummary:
@@ -258,10 +259,19 @@ class AgentLoop:
         try:
             decision = await self.request_decision(observation, self._last_result, tuple(reversed(self._recent)))
         except Exception as exc:  # noqa: BLE001 - 请求/解析失败属于运行语义
+            ability = str(getattr(exc, "ability", "") or "")
+            if ability:
+                # 解析层拒绝（隐藏能力、参数非法）也要让模型下一轮看得到，避免原样重发。
+                self._remember_blocked(ability, str(exc))
             self._record(
                 "decision_failed",
                 status="failed",
-                payload={"error": type(exc).__name__, "code": getattr(exc, "code", ""), "detail": str(exc)[:300]},
+                payload={
+                    "error": type(exc).__name__,
+                    "code": getattr(exc, "code", ""),
+                    "ability": ability or None,
+                    "detail": str(exc)[:300],
+                },
             )
             return None
         finally:
@@ -294,10 +304,11 @@ class AgentLoop:
                 return
             await asyncio.sleep(min(0.2, left))
 
-    async def _idle(self) -> None:
+    async def _idle(self, extra_seconds: float = 0.0) -> None:
         """没有可执行委托：真实等待并记录原因，不擅自开新任务。"""
         started = self.clock()
-        sleep_for = min(self.poll_seconds, max(0.0, self.budget.remaining_seconds()) or self.poll_seconds)
+        wanted = self.poll_seconds + max(0.0, float(extra_seconds))
+        sleep_for = min(wanted, max(0.0, self.budget.remaining_seconds()) or wanted)
         await asyncio.sleep(sleep_for)
         spent = self.clock() - started
         self.recorder.duration("idle_wait", spent)
@@ -318,6 +329,20 @@ class AgentLoop:
     def _remember(self, result: ActionResult, goal: str = "") -> None:
         """记录给模型看的精简历史（含 blocked/failed/unknown）。"""
         self._recent.append(result.to_brief(goal=goal, recorded_at=time.time()))
+
+    def _remember_blocked(self, ability: str, detail: str) -> None:
+        """解析层拒绝的决策没有 ActionResult，也要给模型留一条 blocked 记录。"""
+        self._recent.append(
+            {
+                "ability": ability or "decision",
+                "params": {},
+                "state": "blocked",
+                "detail": str(detail)[:160],
+                "progress": False,
+                "goal": "",
+                "recorded_at": time.time(),
+            }
+        )
 
     async def _consume_decision(self, observation: Observation) -> str | None:
         task, self._decision_task = self._decision_task, None
@@ -354,11 +379,19 @@ class AgentLoop:
             )
             return None
         if call is None:
+            self._no_action_streak += 1
+            backoff = min(2 ** (self._no_action_streak - 1) * self.poll_seconds, 5.0)
             self._record(
                 "no_action",
-                payload={"goal": decision.goal, "note": decision.note, "reason": decision.reason},
+                payload={
+                    "goal": decision.goal,
+                    "note": decision.note,
+                    "reason": decision.reason,
+                    "streak": self._no_action_streak,
+                    "backoff_seconds": round(backoff, 2),
+                },
             )
-            await self._idle()
+            await self._idle(backoff)
             return None
 
         # ref 只在所属快照内有效；模型思考期间现场已经换了几次快照。
@@ -434,6 +467,7 @@ class AgentLoop:
         # 默认不采用模型自报的完成判据：完成由能力的前后观察验证决定。
         self._pending_completion = decision.completion if self.use_model_completion else None
         completion_ignored = bool(decision.completion) and not self.use_model_completion
+        self._no_action_streak = 0
         self.summary.actions += 1
         self._record(
             "action_started",

@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_budget(run)
     run.add_argument("--goal", help="覆盖长期目标文字（不自动变成固定日程）")
     run.add_argument("--radius", type=int, help="观察半径")
+    run.add_argument(
+        "--max-notable-entities",
+        type=int,
+        help="上下文里最多列出多少个非地块实体（越小越省 token）",
+    )
     run.add_argument("--poll", type=float, help="无委托时的轮询间隔（秒）")
     run.add_argument("--max-actions", type=int, help="最多下发多少个委托（工程验收用）")
     run.add_argument("--endpoint", help="游戏桥地址")
@@ -136,6 +141,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "repeat_exempt_abilities": _split_exempt(getattr(args, "repeat_exempt", None)),
         "long_term_goal": getattr(args, "goal", None),
         "snapshot_radius": getattr(args, "radius", None),
+        "max_notable_entities": getattr(args, "max_notable_entities", None),
         "poll_seconds": getattr(args, "poll", None),
         "bridge_endpoint": getattr(args, "endpoint", None),
         "experience_db": getattr(args, "db", None),

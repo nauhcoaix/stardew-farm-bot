@@ -292,15 +292,21 @@ def _routine_registry(*, expose_mechanics: bool = False):
         use = replace(use, exposed=False)
     registry.register(select)
     registry.register(use)
+    registry.register(interact_ability(action_port))
     registry.register(farm_routine_ability(registry))
     return registry, move_port, action_port
 
 
 def test_机械动作默认不对模型开放():
     registry, _move, _action = _routine_registry()
-    assert [descriptor.id for descriptor in registry.descriptors()] == ["farm_routine", "move_to"]
+    assert [descriptor.id for descriptor in registry.descriptors()] == [
+        "farm_routine",
+        "interact",
+        "move_to",
+    ]
     assert [descriptor.id for descriptor in registry.all_descriptors()] == [
         "farm_routine",
+        "interact",
         "move_to",
         "select_item",
         "use",
@@ -355,6 +361,33 @@ def test_农活例行程序自己选工具并逐块浇水():
         {"tile": {"x": 11, "y": 10}, "task": "water"},
         {"tile": {"x": 12, "y": 10}, "task": "water"},
     ]
+
+
+def test_收获用交互而不是挥动工具():
+    registry, _move_port, action_port = _routine_registry()
+    spec = registry.get("farm_routine")
+    crop = entity(
+        "@s1:e1", "soil", "作物", 11, 10, tilled=True, watered=True, harvestable=True, crop=24, cropPhase=4
+    )
+    hoe = inventory(1, "锄头", tool="Hoe")
+    harvested = inventory(2, "防风草", count=1)
+    params = spec.validate({"task": "harvest", "max_targets": 2})
+    before = observe(entities=[crop], inventory_rows=[hoe], selected_slot=1)
+    delegation = spec.start(params, before, "a21")
+
+    after = observe(entities=[], inventory_rows=[hoe, harvested], selected_slot=1)
+    observations = [before, before, before, after, after]
+    progress = None
+    for row in observations:
+        progress = asyncio.run(delegation.step(row))
+        if progress.done:
+            break
+
+    assert progress is not None and progress.state == "completed"
+    assert [call for call in action_port.calls if call[0] == "interact"] == [("interact", "@s1:e1")]
+    assert not [call for call in action_port.calls if call[0] == "use"]
+    assert not [call for call in action_port.calls if call[0] == "select"]
+    assert progress.evidence["done"] == [{"tile": {"x": 11, "y": 10}, "task": "harvest"}]
 
 
 def test_农活前提在没有目标或缺工具时明确失败():

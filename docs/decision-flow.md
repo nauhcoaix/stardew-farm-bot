@@ -111,15 +111,25 @@ flowchart LR
    - 地形前沿候选带 `x/y`、未知邻格数、是否访问过；
    - 交互候选带 `id`（稳定 target_id）、`ref`、`tile`、语义字段；
    - 返回 `truncated / order / more`，明确“看到的不是世界全部”；
-3. `decision/context.py:build_context`（58）：
-   - 现场（按与人物距离截断，报告 dropped 数量与排序理由）；
-   - `abilities`：能力 id、版本、参数说明、观察需求、作用范围、完成判据；
-   - `candidates` / `experiences` / `last_result`（上一次委托的真实结果）/ `budget`；
+3. `decision/context.py:build_context`：
+   - 现场：默认**压缩**——地块合并成 `observation.tiles` 通行网格
+     （`origin` + 逐行字符串，`.` 可通行 / `#` 阻挡 / `?` 未知 / 空格 未观察），
+     实体列表只列非地块实体（NPC/对象/耕地/水源/门/家具…），每条只留非默认字段，
+     上限 `max_notable_entities`（默认 40，按距离排序，`trimmed` 报告 dropped）；
+   - `observation.entity_counts`：可锄地/需浇水/可收获/可装水的数量，替代逐格罗列；
+   - `abilities`：能力 id、版本、参数说明、观察需求、作用范围、完成判据（隐藏能力不出现）；
+   - `candidates`：只留 `id/ref/kind/tile/name`，前沿明细合并为 `considered/truncated`；
+   - `experiences` / `last_result`（上一次委托的真实结果）/ `budget`；
    - `recent_actions`：最近 8 条动作（能力、参数摘要、状态、原因、多少秒前），最新在前；
    - `recent_failures`：其中 `failed` / `unknown` / `blocked` 的前 3 条，方便模型优先注意；
    - 刚重启时运行时历史为空，`make_decider` 会从 `store.recent_actions` 补读该存档最近的动作；
    - `long_term_goal` 与 `goal_revision`；
-   - `provided_knowledge`：项目主动提供的四类信息（能力目录、字段含义、ref 时效、长期目标文字）。
+   - `provided_knowledge`：项目主动提供的信息（能力目录、网格与计数含义、ref 时效、
+     `blocked` 的含义、长期目标文字）。
+
+实测（真实农场快照 290 个实体、半径 8）：压缩前约 31.7k 字符（≈8.9k–11k tokens），
+压缩后约 16.4k 字符（≈4.9k–6.1k tokens）；把 `max_notable_entities` 调到 24 约 14.1k 字符。
+`ContextLimits(compact_entities=False)` 可回到旧行为做对比。
 
 不给的东西：每日日程、作物优先级、固定路线、攻略解法、隐藏全局信息、全局地图。
 
@@ -240,12 +250,17 @@ flowchart LR
 |---|---|
 | `task=water` | 处理 `needsWater=true` 的地块；自动切到水壶，水壶没水时前提直接失败并提示 `refill` |
 | `task=till` | 处理 `diggable=true` 的普通地块；自动切到锄头 |
-| `task=harvest` | 处理 `harvestable=true` 的地块 |
+| `task=harvest` | 处理 `harvestable=true` 的地块；用 `interact` 取走作物（**不挥动工具**，否则镰刀会毁掉作物） |
 | `task=plant` | 处理已耕且无作物的地块；必须给 `seed`（名称或物品 id 模糊匹配） |
 | `task=refill` | 处理 `refillable=true` 的水源格；自动切到水壶 |
 | `task=auto` | 按 浇水 → 锄地 → 收获 → 装水 的顺序选第一个有目标的任务 |
 | `max_targets` | 1～40，默认 8；达到上限时状态为 `unknown` 并报告剩余数量 |
 | `max_seconds` | 5～120，默认 45；体力为 0、场景变化、步数用尽都会提前如实结束 |
+
+被拦截的决策（限频、前提不满足、解析层拒绝：隐藏能力/参数非法）会以 `state=blocked`
+写进 `recent_actions`，并附上原因，所以模型下一轮就看得到“刚才那一下根本没下发”，
+不会原样重发。模型连续输出 `ability=null` 时，循环按 `poll_seconds × 2^(n-1)`
+（上限 5 秒）退避，避免“没活干”时继续按 2 秒一次烧请求。
 
 进度变化只写 `action_step`；控制台对重复说明去重，避免刷屏。
 

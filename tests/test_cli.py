@@ -217,6 +217,18 @@ def test_机械动作开关默认关闭():
         config_from_mapping(dict(REQUIRED, expose_mechanics="yes"))
 
 
+def test_上下文实体上限配置():
+    config = config_from_mapping(dict(REQUIRED, max_notable_entities=24))
+    assert config.max_notable_entities == 24
+    assert config.public()["max_notable_entities"] == 24
+    default = config_from_mapping(dict(REQUIRED))
+    assert default.max_notable_entities == 40
+
+    for bad in (0, 200):
+        with pytest.raises(ConfigError):
+            config_from_mapping(dict(REQUIRED, max_notable_entities=bad))
+
+
 def test_机械动作默认不暴露给模型():
     class Port:
         pass

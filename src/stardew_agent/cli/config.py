@@ -39,6 +39,7 @@ KNOWN_KEYS = REQUIRED_KEYS + (
     "stop_path",
     "embedding_dir",
     "max_context_entities",
+    "max_notable_entities",
 )
 
 
@@ -68,6 +69,7 @@ class AgentConfig:
     stop_path: Path = Path("data/stop.json")
     embedding_dir: Path | None = None
     max_context_entities: int = 120
+    max_notable_entities: int = 40
 
     def __post_init__(self) -> None:
         if self.budget_seconds <= 0:
@@ -84,6 +86,8 @@ class AgentConfig:
             raise ConfigError("repeat_exempt_abilities 只能包含非空能力 id")
         if not 1 <= self.snapshot_radius <= 24:
             raise ConfigError("snapshot_radius 应在 1～24")
+        if not 1 <= self.max_notable_entities <= 120:
+            raise ConfigError("max_notable_entities 应在 1～120")
         if not 0.05 <= self.poll_seconds <= 10:
             raise ConfigError("poll_seconds 应在 0.05～10")
         if not 0.05 <= self.step_interval_seconds <= 10:
@@ -108,11 +112,23 @@ class AgentConfig:
             "repeat_exempt_abilities": list(self.repeat_exempt_abilities),
             "bridge_endpoint": self.bridge_endpoint,
             "snapshot_radius": self.snapshot_radius,
+            "max_context_entities": self.max_context_entities,
+            "max_notable_entities": self.max_notable_entities,
             "experience_db": str(self.experience_db),
             "long_term_goal": self.long_term_goal,
             "poll_seconds": self.poll_seconds,
             "console_output": self.console_output,
         }
+
+
+def _require_int(data: Mapping[str, Any], key: str, default: int) -> int:
+    """读取可选的整数配置：显式给出时不做 0/空值兜底，交给 __post_init__ 校验范围。"""
+    if key not in data:
+        return default
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError("%s 必须是整数" % key)
+    return value
 
 
 def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path | None = None) -> AgentConfig:
@@ -185,6 +201,7 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path | None = None
         stop_path=path_of("stop_path") or Path("data/stop.json"),
         embedding_dir=path_of("embedding_dir"),
         max_context_entities=int(data.get("max_context_entities") or 120),
+        max_notable_entities=_require_int(data, "max_notable_entities", 40),
     )
 
 

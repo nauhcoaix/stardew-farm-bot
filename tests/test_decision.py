@@ -151,12 +151,39 @@ def test_前提被证明不满足时判过期_未知只记录():
 
 
 def test_上下文截断会报告数量与排序():
-    observation = observe(entities=[entity("@s1:e%d" % i, "tile", "地块", 10 + i, 10) for i in range(5)])
-    context = build_context(observation=observation, limits=ContextLimits(max_entities=2))
+    observation = observe(
+        entities=[
+            entity("@s1:e%d" % i, "soil", "耕地", 10 + i, 10, tilled=True, needsWater=True)
+            for i in range(5)
+        ]
+    )
+    context = build_context(observation=observation, limits=ContextLimits(max_notable_entities=2))
     assert len(context["observation"]["entities"]) == 2
     assert context["trimmed"]["entities"]["dropped"] == 3
     assert "距离" in context["trimmed"]["entities"]["order"]
     assert context["provided_knowledge"]
+
+
+def test_默认把地块压成网格并统计农活数量():
+    observation = observe(
+        entities=[
+            entity("@s1:e1", "tile", "地块", 10, 11),
+            entity("@s1:e2", "tile", "地块", 11, 11, diggable=True),
+            entity("@s1:e3", "soil", "耕地", 12, 11, tilled=True, needsWater=True, watered=False),
+        ],
+        x=10,
+        y=10,
+    )
+    context = build_context(observation=observation)
+    view = context["observation"]
+    assert [row["kind"] for row in view["entities"]] == ["soil"]
+    assert view["entity_counts"]["diggable"] == 1
+    assert view["entity_counts"]["needsWater"] == 1
+    assert view["entities"][0]["needsWater"] is True
+    assert "watered" not in view["entities"][0]
+    assert view["tiles"]["origin"] == {"x": 10, "y": 11}
+    assert view["tiles"]["rows"] == ["..."]
+    assert context["trimmed"]["entities"]["compacted"] is True
 
 
 def test_上下文包含最近动作与失败摘要():
@@ -203,6 +230,22 @@ def test_最近动作按上限截断():
         now=200.0,
     )
     assert [row["ability"] for row in context["recent_actions"]] == ["a0", "a1"]
+
+
+def test_参数校验失败时保留能力id便于反馈():
+    observation = observe()
+
+    def reject(name, params):
+        raise Rejected("该能力不直接对模型开放")
+
+    with pytest.raises(Rejected) as info:
+        parse_decision(
+            {"goal": "试一下", "ability": "use", "params": {}},
+            observation=observation,
+            validate_params=reject,
+        )
+    assert info.value.ability == "use"
+    assert "use" in str(info.value)
 
 
 def test_默认提示词不要求模型写完成判据():

@@ -92,8 +92,11 @@
 
 - `build_context(*, observation, abilities, candidates, experiences, last_result,
   recent_results, budget, long_term_goal, goal_revision, limits, now) -> dict`
-  （含 `provided_knowledge` 与截断说明）。`recent_actions` 是最近 8 条动作摘要
-  （最新在前，含状态/原因/多少秒前），`recent_failures` 是其中失败/未知/拦截的前 3 条。
+  （含 `provided_knowledge` 与截断说明）。默认压缩：`observation.tiles` 是通行网格，
+  `observation.entity_counts` 是农活数量，`observation.entities` 只列非地块实体
+  （`ContextLimits.compact_entities=False` 可回到旧的全量视图）；
+  上限由 `max_notable_entities` 控制。`recent_actions` 是最近 8 条动作摘要
+  （最新在前，含状态/原因/多少秒前，`blocked` 也在内），`recent_failures` 是其中失败/未知/拦截的前 3 条。
 - `build_messages(context, *, include_completion=False)`、`build_system_prompt(*, include_completion=False)`、
   `SYSTEM_PROMPT`。默认提示词不含 `completion` 字段：完成只由能力的前后观察验证；
   `include_completion=True`（配置 `model_completion_enabled`）才把模型判据纳入结算。
@@ -137,7 +140,8 @@
   validate_limits)`、`farm_routine_ability(registry)`、`composite_ability(definition, registry)`。
 - `farm_routine_ability`：任务与上限
   `{task: auto|water|till|harvest|plant|refill, max_targets, max_seconds, seed}`；
-  内部调用 `select_item`/`move_to`/`use`，因此这些底层动作默认 `exposed=False`。
+  内部调用 `select_item`/`move_to`/`use`（收获走 `interact`，不挥动工具），
+  因此这些底层动作默认 `exposed=False`。
 - `PremiseCheck(kind, met, detail)`，`kind ∈ {game, user, budget, advice}`；
   只有 `game/user/budget` 明确为假时才阻止下发。
 
