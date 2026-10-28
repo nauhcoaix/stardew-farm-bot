@@ -41,14 +41,14 @@ from ..contracts.errors import ModelError, TransportError
 from ..contracts.experience import Event
 from ..contracts.observation import Observation
 from ..contracts.results import ActionResult
-from ..decision import ContextLimits, build_context, build_messages, parse_decision
+from ..decision import ContextLimits, build_context, build_messages, inventory_state, parse_decision
 from ..embeddings import Encoder
 from ..experience import ExperienceStore, handle_failure, learn_action, record_skill_feedback
 from ..fishing_client import read_status, send as fish_send
 from ..model_client import ChatClient, default_config_paths, load_settings
 from ..observation import from_snapshot, observed_tiles, position_of
 from ..exploration import candidates as explore_candidates
-from ..exploration import visited_cells
+from ..exploration import placement_candidates, visited_cells
 from ..repeat_guard import RepeatGuard, RepeatPolicy
 from ..runtime import (
     ActionOwnership,
@@ -259,7 +259,7 @@ def build_candidates(observation: Observation, store: ExperienceStore, *, limit:
     known = []
     if observation.location:
         known = store.known_tiles(observation.save_key, observation.location)
-    return explore_candidates(
+    result = explore_candidates(
         observed=observed_tiles(observation),
         known=known,
         start=start,
@@ -269,6 +269,16 @@ def build_candidates(observation: Observation, store: ExperienceStore, *, limit:
         scope=observation.scope,
         limit=limit,
     )
+    inventory = inventory_state(observation)
+    if inventory.get("full") and int(inventory.get("wood") or 0) >= 50:
+        spots = placement_candidates(observation.entities, observation.player, limit=3)
+        if spots:
+            #: 背包满且有 50 木材：把“可放箱子的空格”放到候选最前面，模型不用自己找空地。
+            result["items"] = spots + list(result.get("items") or [])
+            result["order"] = "背包已满：优先 placement 候选（inventory_action op=place_chest）；" + str(
+                result.get("order") or ""
+            )
+    return result
 
 
 def make_decider(

@@ -8,7 +8,7 @@
 """
 
 from .binding import rebind_call
-from .context import DEFAULT_LONG_TERM_GOAL, ContextLimits, build_context
+from .context import DEFAULT_LONG_TERM_GOAL, ContextLimits, build_context, inventory_state
 from .freshness import Freshness, check as check_freshness
 from .parse import DecisionError, ParamsValidator, parse_decision
 from .predicates import Evaluation, PredicateError, evaluate, evaluate_all, validate, validate_all
@@ -29,6 +29,7 @@ __all__ = [
     "check_freshness",
     "evaluate",
     "evaluate_all",
+    "inventory_state",
     "parse_decision",
     "rebind_call",
     "validate",

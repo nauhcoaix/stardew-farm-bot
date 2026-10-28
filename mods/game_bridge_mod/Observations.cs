@@ -177,6 +177,7 @@ public sealed class Observations
             ["maxEnergy"] = Game1.player.MaxStamina,
             ["selectedSlot"] = Game1.player.CurrentToolIndex,
             ["canMove"] = Game1.player.CanMove,
+            ["freeSlots"] = Game1.player.Items.Count(item => item == null),
             ["money"] = Game1.player.Money,
             ["maxItems"] = Game1.player.MaxItems,
         };

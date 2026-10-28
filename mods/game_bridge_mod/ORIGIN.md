@@ -94,6 +94,15 @@
 - 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-canmove`）。
 
+## 本轮修改（2026-10-28，版本 0.1.8）
+
+- 背包满时不再“制作后掉地上”：`Crafting.Craft` 在扣材料前检查产物能否进背包
+  （空格或可叠加余量），放不下就返回 `ok=false`，提示先 `place_chest` / `ship`；
+- 观察的 `player` 增加 `freeSlots`，模型能直接看到还剩几格；
+- `PlaceChest` 增加放置校验：只能放在人物 1～2 格内、不能是出口/门/家具/角色/已有物体格；
+- 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-inventory`）。
+
 ## 构建
 
 ```powershell

@@ -43,6 +43,14 @@ namespace AgentStardew
             }
         }
 
+        static bool HasRoomFor(IList<Item> inv, Item sample)
+        {
+            foreach (var slot in inv) if (slot == null) return true;
+            foreach (var slot in inv)
+                if (slot != null && slot.canStackWith(sample) && slot.Stack < slot.maximumStackSize()) return true;
+            return false;
+        }
+
         static string? ResolveKey(string name)
         {
             var data = Data();
@@ -137,12 +145,20 @@ namespace AgentStardew
                 {
                     if (Count(inv, id) < n) { return new { kind = "craft", ok = crafted > 0, crafted, reason = "材料不够再做下一个" }; }
                 }
-                foreach (var (id, n) in need) Remove(inv, id, n);
 
                 Item item;
                 try { item = ItemRegistry.Create("(O)" + outId, 1); }
                 catch (Exception e) { return new { kind = "craft", ok = crafted > 0, crafted, reason = "产出生成失败：" + e.Message }; }
                 if (item == null) break;
+                if (!HasRoomFor(inv, item))
+                    return new
+                    {
+                        kind = "craft",
+                        ok = crafted > 0,
+                        crafted,
+                        reason = "背包满了：先 inventory_action op=place_chest 放箱子或 ship，把东西放进去再制作",
+                    };
+                foreach (var (id, n) in need) Remove(inv, id, n);
                 if (!player.addItemToInventoryBool(item))
                 {
                     Game1.currentLocation?.debris.Add(new Debris(item, player.Position));

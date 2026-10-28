@@ -10,7 +10,7 @@
 
 | 项目 | 状态 |
 |---|---|
-| 两个 C# Mod | `game_bridge_mod` 已改（A* + 出口切图 + CanMove 自愈）并编译安装为 0.1.7；`fishing_mod` 仍为原样、未重新编译 |
+| 两个 C# Mod | `game_bridge_mod` 已改（A* + 出口切图 + CanMove 自愈 + 满包保护）并编译安装为 0.1.8；`fishing_mod` 仍为原样、未重新编译 |
 | 九项白名单模块 | 已提取为独立包，去掉旧 `MemoryStore` / `WorkPlanner` 接线 |
 | 新模块（契约、运行时、决策、经验、能力、CLI） | 已实现，含离线测试 |
 | 离线测试 | `pytest` 全绿（不依赖游戏、模型账户或桌面） |
@@ -32,8 +32,8 @@
 | `buy_item` | 买种子/物品 | 价格与库存来自游戏 `menudump`；校验钱、单价上限、背包变化 |
 | `menu_click` | 点击菜单坐标 | 普通菜单或背包区域；坐标来自 `inspect_menu` |
 | `close_menu` | 关闭菜单 | 商店/对话/背包通用 |
-| `craft_item` | 按配方制作 | 材料由游戏扣除；验证背包该物品增加 |
-| `inventory_action` | 箱子/发货/放箱子 | `op=chest_put/chest_get/ship/place_chest`；按背包变化验证 |
+| `craft_item` | 按配方制作 | 材料由游戏扣除；验证背包该物品增加；**背包满时直接拒绝**（先放箱子/发货，不会把产物丢地上） |
+| `inventory_action` | 箱子/发货/放箱子 | `op=chest_put/chest_get/ship/place_chest`；按背包变化验证；`place_chest` 直接消耗 50 木材，格子要在 1～2 格内 |
 | `fish` | 委托独立钓鱼 Mod | 需要已安装 `StandaloneFishingSkill` |
 | 组合技能 | 已验证的步骤序列 | 由学习模块晋级后注册 |
 

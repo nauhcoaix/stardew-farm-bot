@@ -167,6 +167,15 @@ public static class MenuDump
             return new { kind = "placechest", ok = false, reason = "木材不够 50" };
         var loc = Game1.currentLocation;
         var tile = new Microsoft.Xna.Framework.Vector2(tx, ty);
+        int distance = System.Math.Abs(Game1.player.TilePoint.X - tx) + System.Math.Abs(Game1.player.TilePoint.Y - ty);
+        if (distance < 1 || distance > 2)
+            return new { kind = "placechest", ok = false, reason = "要站在空格 1～2 格内再放箱子" };
+        if (Pathfinder.IsWarp(loc, new Microsoft.Xna.Framework.Point(tx, ty)))
+            return new { kind = "placechest", ok = false, reason = "出口/门格不能放箱子" };
+        if (loc.furniture.Any(f => f.TileLocation.ToPoint() == new Microsoft.Xna.Framework.Point(tx, ty)))
+            return new { kind = "placechest", ok = false, reason = "那格有家具" };
+        if (loc.characters.Any(c => c.TilePoint.X == tx && c.TilePoint.Y == ty))
+            return new { kind = "placechest", ok = false, reason = "那格站着人" };
         if (loc.objects.ContainsKey(tile))
             return new { kind = "placechest", ok = false, reason = "那格已经有东西" };
         int need = 50;

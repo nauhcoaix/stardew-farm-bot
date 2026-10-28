@@ -110,25 +110,30 @@ flowchart LR
 1. 检索经验：`store.recall(query, save_key=...)`（`experience/store.py:289`）
    - 命中范围：本存档的 `scope='save'` 事实 + 已验证的 `scope='mechanism'` 机制；
    - 排序：关键词 2-gram / 向量重合 + 验证状态 + 新旧；**相似度不会提升验证等级**；
-2. 生成候选：`build_candidates`（149）→ `exploration/candidates.py:candidates`（107）
+2. 生成候选：`build_candidates`（`cli/wiring.py`）→ `exploration/candidates.py:candidates`
    - 地形前沿候选带 `x/y`、未知邻格数、是否访问过；
    - 交互候选带 `id`（稳定 target_id）、`ref`、`tile`、语义字段；
+   - 背包满且有 50 木材时，最前面插入 `mode=inventory` 的 `place_chest` 候选（`tx/ty` 是空格）；
    - 返回 `truncated / order / more`，明确“看到的不是世界全部”；
 3. `decision/context.py:build_context`：
    - 现场：默认**压缩**——地块合并成 `observation.tiles` 通行网格
      （`origin` + 逐行字符串，`.` 可通行 / `#` 阻挡 / `?` 未知 / 空格 未观察），
      实体列表只列非地块实体（NPC/对象/耕地/水源/门/家具…），每条只留非默认字段，
-     上限 `max_notable_entities`（默认 40，按距离排序，`trimmed` 报告 dropped）；
+     上限 `max_notable_entities`（默认 24，按距离排序，`trimmed` 报告 dropped）；
    - `observation.entity_counts`：可锄地/需浇水/可收获/可装水的数量，替代逐格罗列；
+   - `observation.inventory_state`：`free_slots / full / wood / place_chest_tiles`，
+     满包时模型不用自己数背包；
    - `abilities`：能力 id、版本、参数说明、观察需求、作用范围、完成判据（隐藏能力不出现）；
-   - `candidates`：只留 `id/ref/kind/tile/name`，前沿明细合并为 `considered/truncated`；
+   - `candidates`：只留 `id/ref/kind/tile/name`，背包满的放置候选额外保留 `op/tx/ty`；
+     前沿明细合并为 `considered/truncated`；
    - `experiences` / `last_result`（上一次委托的真实结果）/ `budget`；
    - `recent_actions`：最近 8 条动作（能力、参数摘要、状态、原因、多少秒前），最新在前；
    - `recent_failures`：其中 `failed` / `unknown` / `blocked` 的前 3 条，方便模型优先注意；
    - 刚重启时运行时历史为空，`make_decider` 会从 `store.recent_actions` 补读该存档最近的动作；
+   - `instructions`：人类指令（见 §10 的收件箱）；
    - `long_term_goal` 与 `goal_revision`；
-   - `provided_knowledge`：项目主动提供的信息（能力目录、网格与计数含义、ref 时效、
-     `blocked` 的含义、长期目标文字）。
+   - `provided_knowledge`：项目主动提供的信息（能力目录、网格与计数含义、背包满的处置、
+     ref 时效、`blocked` 的含义、长期目标文字）。
 
 实测（真实农场快照 290 个实体、半径 8）：压缩前约 30.7k 字符（≈8.6k–10.6k tokens），
 压缩后约 13.1k 字符（≈4.0k–5.0k tokens）；能力目录只保留 `id/summary/params/scope`，

@@ -8,6 +8,7 @@ from stardew_agent.exploration import (
     frontier_candidates,
     interaction_candidates,
     path_to,
+    placement_candidates,
     reachable,
     region_route,
     visited_cells,
@@ -98,3 +99,19 @@ def test_地区连接只走已记录有向边():
     assert route is not None and [step["to"] for step in route] == ["Farm", "Town"]
     assert region_route(links, "Town", "Farm") is None
     assert region_route(links, "Farm", "Farm") == []
+
+
+def test_背包满时给出可放箱子的空格():
+    player = {"position": {"x": 10, "y": 10}}
+    entities = [
+        entity("@s1:t1", "tile", "地块", 11, 10),
+        entity("@s1:t2", "tile", "地块", 10, 11),
+        entity("@s1:t3", "tile", "地块", 12, 10, passable=False),
+        entity("@s1:t4", "object", "树", 9, 10),
+    ]
+    rows_out = placement_candidates(entities, player, limit=3)
+
+    assert [row["id"] for row in rows_out] == ["placement:11:10", "placement:10:11"]
+    assert rows_out[0]["mode"] == "inventory"
+    assert rows_out[0]["op"] == "place_chest"
+    assert (rows_out[0]["tx"], rows_out[0]["ty"]) == (11, 10)

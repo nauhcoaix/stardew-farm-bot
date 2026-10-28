@@ -6,7 +6,14 @@
 * :mod:`regions` — 地区连接链
 """
 
-from .candidates import INTERACTIVE_KINDS, candidates, frontier_candidates, interaction_candidates, visited_cells
+from .candidates import (
+    INTERACTIVE_KINDS,
+    candidates,
+    frontier_candidates,
+    interaction_candidates,
+    placement_candidates,
+    visited_cells,
+)
 from .grid import Cell, build_grid, tile_key, unknown_neighbors
 from .pathing import manhattan, path_to, reachable
 from .regions import region_route
@@ -20,6 +27,7 @@ __all__ = [
     "interaction_candidates",
     "manhattan",
     "path_to",
+    "placement_candidates",
     "reachable",
     "region_route",
     "tile_key",
