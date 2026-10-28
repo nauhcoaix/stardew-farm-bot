@@ -246,7 +246,9 @@ stardew-agent skills --config config.json retire --id skill:xxx --reason "前提
 - `headers`：额外请求头（值不进日志/状态，`public()` 只列名字）；
 - `extra_body`：额外请求体字段（`top_p`、`seed`、`enable_thinking`…，最后合并，可覆盖默认值）；
 - `json_mode`：是否发送 `response_format={"type":"json_object"}`，默认 `true`；端点不支持就设 `false`；
-- `max_tokens_param`：生成上限字段名，默认 `max_tokens`；OpenAI 新推理模型用 `max_completion_tokens`。
+- `max_tokens_param`：生成上限字段名，默认 `max_tokens`；OpenAI 新推理模型用 `max_completion_tokens`；
+  有些思考型模型可以用 `extra_body` 关闭思考（例如 `{"thinking": {"type": "disabled"}}`），
+  能显著降低延迟与 completion tokens——是否支持取决于端点。
 
 也可以完全用环境变量（不需要 `model.json`）：
 
