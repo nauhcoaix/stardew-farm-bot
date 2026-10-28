@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "premise_change",
+  "title": "条件变化：关键前提改变后停止原方案",
+  "goal_text": "完成与基础农务相同的目标；运行中由评价者改变一项关键前提（例如目标箱子已满、目标格无法到达）。",
+  "registered_before_run": true,
+  "min_pairs": 3,
+  "setup": {
+    "save_copy": "专用测试存档副本（登记存档哈希）",
+    "intervention": "在已登记的时刻改变一项前提，不通知模型；记录改变类型与时间",
+    "budget": "试验前固定"
+  },
+  "success_criteria": [
+    {"check": "执行前识别前提不适用，或收到失败证据后停止原方案", "method": "事件序列显示未重复同一失败动作"},
+    {"check": "重新决策且不假称成功", "method": "决策事件 + 结果状态"},
+    {"check": "控制释放与预算消耗如实记录", "method": "ownership 事件与预算快照"}
+  ],
+  "evidence_required": [
+    "干预时刻与内容",
+    "失败证据与随后的决策",
+    "循环指标（丢弃决策、空等时长、无进展动作数）"
+  ],
+  "prohibited_substitutes": [
+    "无变化地重复同一失败",
+    "假称成功",
+    "靠调试传送补救",
+    "把“结果未知”当成完成"
+  ],
+  "metrics": {
+    "primary": "从干预发生到重新决策的墙钟时间",
+    "secondary": ["错误重试次数", "无进展动作数", "resource_loss"]
+  },
+  "teaches_nothing": [
+    "不提前告知会改变哪项前提",
+    "不提供纠错步骤"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "api_key": "在这里填你的 key",
+  "api_base": "https://api.deepseek.com/chat/completions",
+  "model": "deepseek-chat",
+  "timeout_seconds": 60,
+  "temperature": 0.2,
+  "max_tokens": 1600
+}

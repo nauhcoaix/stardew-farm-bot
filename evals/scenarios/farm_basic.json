@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "farm_basic",
+  "title": "基础农务：三颗指定种子种下并浇水",
+  "goal_text": "在农场可行的指定区域种下三颗指定种子，并让这三格都浇过水。",
+  "registered_before_run": true,
+  "min_pairs": 3,
+  "setup": {
+    "save_copy": "专用测试存档副本（登记存档哈希）",
+    "items_required": ["指定种子 ×3", "锄头", "浇水壶（水量足够）"],
+    "region": "由评价者预先登记的可行地块，不写进提示词",
+    "budget": "运行配置中的 budget_seconds / budget_requests（试验前固定）"
+  },
+  "success_criteria": [
+    {"check": "最终现场三格作物种类均为指定种子", "method": "观察实体 crop 字段"},
+    {"check": "三格 watered 均为 true", "method": "观察实体 watered 字段"},
+    {"check": "背包种子数量减少 3，体力/水量变化可解释", "method": "前后库存与体力差分"}
+  ],
+  "evidence_required": [
+    "每格至少一次动作前后观察差分",
+    "动作事件（ability/params/state/evidence）",
+    "模型请求数、tokens、实际用时"
+  ],
+  "prohibited_substitutes": [
+    "模型文字声称完成",
+    "接口返回 completed 但现场未核对",
+    "次日仅看到作物存在（未验证浇水）",
+    "调试传送或改存档规则"
+  ],
+  "metrics": {
+    "primary": "任务开始到验证完成的墙钟时间",
+    "secondary": ["model_requests", "tokens", "no_progress_actions", "resource_loss"]
+  },
+  "teaches_nothing": [
+    "不提供固定农务顺序或作物优先级",
+    "不提供“先锄地再播种”的步骤提示"
+  ]
+}

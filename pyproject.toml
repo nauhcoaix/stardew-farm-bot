@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stardew-agent"
+version = "0.1.0"
+description = "学习型星露谷机器人：模型决定目标与行动，本地执行有界委托"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["websockets>=12.0"]
+
+[project.optional-dependencies]
+embeddings = ["numpy>=1.26", "onnxruntime>=1.17", "tokenizers>=0.15"]
+dev = ["pytest>=8", "numpy>=1.26"]
+
+[project.scripts]
+stardew-agent = "stardew_agent.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-q"

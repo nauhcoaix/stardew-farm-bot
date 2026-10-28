@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# 运行数据与密钥（不要提交）
+config.json
+model.json
+data/
+models/
+evals/results/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+state.json
+stop.json
+
+# C# 构建输出
+mods/**/bin/
+mods/**/obj/
+
+# 编辑器
+.vscode/
+.idea/

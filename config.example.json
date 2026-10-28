@@ -1,0 +1,26 @@
+{
+  "budget_seconds": 600,
+  "budget_requests": 40,
+  "repeat_window_seconds": 8,
+  "repeat_max_runs": 5,
+
+  "bridge_endpoint": "ws://127.0.0.1:17654/",
+  "snapshot_radius": 8,
+
+  "game_path": "C:/Program Files (x86)/Steam/steamapps/common/Stardew Valley",
+  "fishing_runtime": null,
+
+  "experience_db": "data/experience.sqlite3",
+  "model_config": "model.json",
+  "embedding_dir": null,
+
+  "long_term_goal": "在用户约束和预算内了解世界、学会独立生活，积累能够验证和复用的经验。",
+
+  "poll_seconds": 0.5,
+  "step_interval_seconds": 0.2,
+  "console_output": true,
+  "max_context_entities": 120,
+
+  "state_path": "data/state.json",
+  "stop_path": "data/stop.json"
+}

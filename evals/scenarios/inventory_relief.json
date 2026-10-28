@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "inventory_relief",
+  "title": "背包受限：保留指定物品并恢复收集空间",
+  "goal_text": "保留背包里的指定物品，恢复至少两个空槽，并实际继续收集一种此前装不下的新物品。",
+  "registered_before_run": true,
+  "min_pairs": 3,
+  "setup": {
+    "save_copy": "专用测试存档副本（登记存档哈希）",
+    "constraints": "背包接近满；指定物品为保护物品，不得丢弃、卖出或放入无法取回的位置",
+    "available_actions": "当前桥支持的动作（含箱子取放、发货/商店等扩展写操作若已启用）",
+    "solvability": "由评价者预先确认存在当前能力可实现的解，解法不写进提示词"
+  },
+  "success_criteria": [
+    {"check": "保护物品的种类与数量不变", "method": "库存差分"},
+    {"check": "产生至少两个空槽", "method": "库存差分"},
+    {"check": "成功收集一种此前装不下的新物品", "method": "库存新增 + 现场采集动作证据"},
+    {"check": "保护物品在背包或有证据可取回的容器中", "method": "容器交互事件 + 后续取回观察"}
+  ],
+  "evidence_required": [
+    "起始与结束库存快照",
+    "每一次取放/收集的动作事件与前后观察",
+    "模型请求数、tokens、实际用时"
+  ],
+  "prohibited_substitutes": [
+    "丢弃或卖掉保护物品",
+    "只报告出现空槽却没有验证继续收集",
+    "场景本身无可行解",
+    "把接口已直接提供的储物/配方用途包装成全新机制发现"
+  ],
+  "metrics": {
+    "primary": "任务开始到验证完成的墙钟时间",
+    "secondary": ["model_requests", "tokens", "no_progress_actions", "resource_loss"]
+  },
+  "teaches_nothing": [
+    "不提供“把东西放进箱子”或“卖东西腾位置”的解法",
+    "不提供背包整理顺序"
+  ]
+}

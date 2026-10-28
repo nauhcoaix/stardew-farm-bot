@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/stardew-agent/eval-report.schema.json",
+  "title": "学习行为验收报告",
+  "type": "object",
+  "required": ["schema_version", "registered_at", "environment", "scenarios"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "registered_at": {"type": "string", "description": "试验开始前登记指标与预算的时间"},
+    "environment": {
+      "type": "object",
+      "required": ["game_version", "smapi_version", "model", "prompt_version", "save_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "game_version": {"type": "string"},
+        "smapi_version": {"type": "string"},
+        "model": {"type": "string"},
+        "served_model": {"type": "string", "description": "API 无法固定版本时记录实际服务标识"},
+        "prompt_version": {"type": "string"},
+        "save_hash": {"type": "string"},
+        "budget_seconds": {"type": "number"},
+        "budget_requests": {"type": "integer"},
+        "notes": {"type": "string"}
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "runs"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "runs": {
+            "type": "array",
+            "minItems": 6,
+            "description": "至少三组配对（经验组 + 禁用经验组）",
+            "items": {
+              "type": "object",
+              "required": [
+                "run_id",
+                "group",
+                "started_at",
+                "wall_clock_seconds",
+                "verified",
+                "model_requests",
+                "no_progress_actions",
+                "evidence_refs"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "run_id": {"type": "string"},
+                "group": {"enum": ["treatment", "control"]},
+                "pair_id": {"type": "string", "description": "同一次配对的两条运行共享此值"},
+                "started_at": {"type": "string"},
+                "wall_clock_seconds": {"type": "number", "minimum": 0},
+                "verified": {"type": "boolean", "description": "是否按场景判据验证完成"},
+                "failure_reason": {"type": ["string", "null"]},
+                "model_requests": {"type": "integer", "minimum": 0},
+                "tokens": {"type": ["integer", "null"]},
+                "no_progress_actions": {"type": "integer", "minimum": 0},
+                "resource_loss": {"type": "number", "minimum": 0},
+                "restarted_before_run": {"type": "boolean"},
+                "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                "notes": {"type": "string"}
+              }
+            }
+          },
+          "summary": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "median_wall_clock_treatment": {"type": "number"},
+              "median_wall_clock_control": {"type": "number"},
+              "restart_reuse_success": {"type": "string", "description": "例如 2/3"},
+              "improved": {"type": "boolean"},
+              "claim": {"enum": ["功能接通", "学习有效"]}
+            }
+          }
+        }
+      }
+    },
+    "unverified_claims": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "无法由本次报告证明、不得对外声称的结论"
+    }
+  }
+}
