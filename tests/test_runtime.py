@@ -413,3 +413,29 @@ def test_失败动作会进入下一次决策的历史():
     assert any("判据未满足" in row["detail"] for row in harness.seen_recent)
     assert harness.seen_recent[0]["ability"] == "move_to"
 
+
+def test_换存档会清掉最近动作与上次结果():
+    harness = Harness([decision_payload()], requests=4)
+    asyncio.run(harness.run(max_actions=1))
+    assert list(harness.loop._recent)
+    assert harness.loop._last_result is not None
+
+    harness.loop._note_context(observe(save_id="save-2"))
+
+    assert list(harness.loop._recent) == []
+    assert harness.loop._last_result is None
+    kinds = [event.kind for event in harness.recorder.events]
+    assert "context_switched" in kinds
+
+
+def test_模型判据不能把失败升级为完成():
+    harness = Harness(
+        [decision_payload(completion={"path": "player.position.x", "op": "==", "value": 10})],
+        requests=4,
+        progresses=[Progress("failed", "端口拒绝")],
+        use_model_completion=True,
+    )
+    summary = asyncio.run(harness.run(max_actions=1))
+    assert summary.failed == 1
+    assert summary.completed == 0
+

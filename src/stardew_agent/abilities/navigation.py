@@ -103,10 +103,11 @@ class MoveDelegation(DelegationBase):
             )
         self.steps += 1
         try:
+            # 同一个逻辑委托始终用同一个 actionId：传输重试/停止都能对上号。
             if self.ref is not None:
-                await self.port.move(near=self.ref)
+                await self.port.move(near=self.ref, action_id=self.action_id)
             else:
-                await self.port.move(x=self.target[0], y=self.target[1])
+                await self.port.move(x=self.target[0], y=self.target[1], action_id=self.action_id)
         except AgentError as exc:
             if getattr(exc, "code", "") in STALE_CODES:
                 return self.finish("failed", "移动被拒绝：%s" % exc, error=exc.code)

@@ -80,6 +80,9 @@ flowchart LR
 1. `_halt_reason`：停止文件或预算用尽 → 不再下发新动作；
 2. `_observe`：失败只记录 `observe_failed` 并等待，不崩溃；
 3. `_note_context`：存档/游戏日变化 → `guard.reset()`；
+   **换存档时**额外清空 `recent_actions` 与 `last_result`，记录 `context_switched`：
+   A 存档的动作历史不会进入 B 存档的决策上下文（短期目标 `state.goal` 也由
+   `make_decider` 在换存档时归零，长期目标文字来自配置、不随存档变化）；
 4. 只有**当前没有在途委托、也没有在途决策**时才发起 `_ask`（`asyncio.create_task`），
    并把这次观察记为 `_decision_based_on`；
 5. 若有在途委托 → `_step_active` 推进一个分段，然后 `sleep(step_interval_seconds)`，避免空转。

@@ -65,8 +65,10 @@ cli.run_agent
 | 收获不挥工具 | `farm_routine` 的 `harvest` 走 `interact`（桥的 `use` 只挥当前工具/种子） |
 | 上下文按预算压缩 | `decision/context.py`：地块→通行网格，实体只留非默认字段，候选去重 |
 | 限频不把“有进展的续跑”算成新动作 | 只有新委托下发时 `RepeatGuard.record` |
-| 经验状态不会被相似度或模型自信提升 | `experience/store.py`（显式状态变更 + 晋级判据） |
+| 经验状态不会被相似度或模型自信提升 | `experience/store.py`（显式状态变更 + 晋级判据；`status=verified` 必须带证据） |
 | 存档事实不跨存档 | 所有索引表带 `save_key`；`scope='save'` 的经验必须带存档 |
+| 换存档不继承动作历史 | `loop._note_context`：清空 `recent_actions`/`last_result` 并记 `context_switched`；`make_decider` 归零短期目标 |
+| 一次逻辑委托只有一个动作 ID | 能力把 `delegation.action_id` 传给 `actionId`（`navigation`/`interaction`），桥按连接串行 |
 
 ## 数据所有权
 

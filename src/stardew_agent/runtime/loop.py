@@ -149,6 +149,7 @@ class AgentLoop:
         self._observation_at = 0.0
         self._recent: deque[dict] = deque(maxlen=max(1, int(recent_history_limit)))
         self._no_action_streak = 0
+        self._context_save: str | None = None
 
     # ---- 对外入口 -------------------------------------------------
     async def run(self, *, max_actions: int | None = None) -> LoopSummary:
@@ -236,6 +237,20 @@ class AgentLoop:
         if self._context == key:
             return
         self._context = key
+        previous_save = self._context_save
+        self._context_save = observation.save_key
+        if previous_save is not None and previous_save != observation.save_key:
+            # 换存档：A 的最近动作与上次结果不能出现在 B 的决策上下文里。
+            self._recent.clear()
+            self._last_result = None
+            self._record(
+                "context_switched",
+                payload={
+                    "from_save": previous_save,
+                    "to_save": observation.save_key,
+                    "cleared": ["recent_actions", "last_result"],
+                },
+            )
         if self.guard is not None:
             self.guard.reset()
             self._record("guard_reset", payload={"context": key})

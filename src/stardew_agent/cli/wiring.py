@@ -196,6 +196,11 @@ def make_decider(
         last_result: ActionResult | None,
         recent_results: Sequence[Mapping[str, Any]] = (),
     ) -> Decision | None:
+        if state.get("save_key") != observation.save_key:
+            # 短期目标是模型在某个存档里提出的；换存档后不能继续沿用。
+            state["goal"] = ""
+            state["goal_revision"] = 0
+            state["save_key"] = observation.save_key
         limits = ContextLimits(
             max_entities=config.max_context_entities,
             max_notable_entities=config.max_notable_entities,
@@ -337,7 +342,7 @@ async def build_runtime(
         )
     )
     observer = observe or make_observer(bridge, config, store)
-    state: dict = {"goal": "", "goal_revision": 0}
+    state: dict = {"goal": "", "goal_revision": 0, "save_key": ""}
     decider = make_decider(model, registry, store, budget, config, state)
     loop = AgentLoop(
         observe=observer,

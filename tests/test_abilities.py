@@ -28,9 +28,11 @@ from tests.helpers import entity, inventory, menu_row, observe
 class FakeMovePort:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.kwargs: list[dict] = []
 
     async def move(self, x=None, y=None, near=None, **kwargs):
         self.calls.append((x, y, near))
+        self.kwargs.append(dict(kwargs))
         return {"ok": True, "changed": True}
 
 
@@ -38,21 +40,26 @@ class FakeActionPort:
     def __init__(self, *, result=None) -> None:
         self.result = result or {"changed": True}
         self.calls: list[tuple] = []
+        self.kwargs: list[dict] = []
 
     async def select(self, slot, **kwargs):
         self.calls.append(("select", slot))
+        self.kwargs.append(dict(kwargs))
         return self.result
 
     async def use(self, ref, **kwargs):
         self.calls.append(("use", ref))
+        self.kwargs.append(dict(kwargs))
         return self.result
 
     async def interact(self, ref, **kwargs):
         self.calls.append(("interact", ref))
+        self.kwargs.append(dict(kwargs))
         return self.result
 
     async def menu(self, ref, **kwargs):
         self.calls.append(("menu", ref))
+        self.kwargs.append(dict(kwargs))
         return self.result
 
 
@@ -546,4 +553,74 @@ def test_农活前提在没有目标或缺工具时明确失败():
     checks = spec.check_premises(params, no_tool)
     assert any(check.met is False and "没有水壶" in check.detail for check in checks)
 
+
+
+def test_委托把稳定动作id传给端口():
+    move_port = FakeMovePort()
+    spec = move_ability(move_port)
+    start = observe(x=10, y=10)
+    delegation = spec.start(spec.validate({"x": 12, "y": 10, "max_steps": 2}), start, "a-fixed")
+    run_step(delegation, start)
+    assert move_port.kwargs[-1]["action_id"] == "a-fixed"
+
+    action_port = FakeActionPort()
+    use_spec = use_ability(action_port)
+    soil = entity("@s1:e1", "soil", "耕地", 10, 10, tilled=True, watered=False)
+    observation = observe(entities=[soil])
+    delegation = use_spec.start(
+        use_spec.validate({"target": "@s1:e1", "expect": "water"}), observation, "a-use"
+    )
+    run_step(delegation, observation)
+    assert action_port.kwargs[-1]["action_id"] == "a-use"
+
+
+def test_农活委托取消后不再下发写操作():
+    registry, _move, action_port = _routine_registry()
+    spec = registry.get("farm_routine")
+    soil = entity("@s1:e1", "soil", "耕地", 11, 10, tilled=True, needsWater=True)
+    can = inventory(2, "浇水壶", tool="WateringCan", water=40, waterCapacity=40)
+    observation = observe(entities=[soil], inventory_rows=[can], selected_slot=2)
+    delegation = spec.start(spec.validate({"task": "water"}), observation, "a26")
+
+    asyncio.run(delegation.step(observation))  # 开始走向目标
+    asyncio.run(delegation.cancel("测试停止"))
+    progress = asyncio.run(delegation.step(observation))
+    assert progress.state == "cancelled"
+    assert action_port.calls == []
+
+
+def test_每个能力都有描述与可执行入口():
+    registry, _move, _action = _routine_registry()
+    observation = observe(
+        entities=[entity("@s1:e1", "soil", "耕地", 11, 10, tilled=True, needsWater=True)],
+        inventory_rows=[inventory(2, "浇水壶", tool="WateringCan", water=40, waterCapacity=40)],
+        menu=menu_row(["@s1:m1"]),
+        selected_slot=2,
+    )
+    minimal = {
+        "move_to": {"x": 10, "y": 11},
+        "select_item": {"slot": 2},
+        "use": {"target": "@s1:e1"},
+        "interact": {"target": "@s1:e1"},
+        "choose_menu_option": {"option": "@s1:m1"},
+        "farm_routine": {},
+    }
+    started = 0
+    for descriptor in registry.all_descriptors():
+        spec = registry.get(descriptor.id)
+        assert descriptor.version and descriptor.summary
+        assert isinstance(dict(descriptor.params), dict)
+        with pytest.raises(Rejected):
+            spec.validate({"__unexpected__": True})
+        params = spec.validate(minimal[descriptor.id])
+        checks = spec.check_premises(params, observation)
+        assert all(check.kind in ("game", "user", "budget", "advice") for check in checks)
+        try:
+            delegation = spec.start(params, observation, "a-contract")
+        except (Rejected, PremiseFailed):
+            continue
+        assert delegation.action_id == "a-contract"
+        assert hasattr(delegation, "step") and hasattr(delegation, "cancel")
+        started += 1
+    assert started >= 4
 

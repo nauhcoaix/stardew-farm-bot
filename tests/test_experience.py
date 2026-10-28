@@ -36,8 +36,16 @@ def result(state: str = "completed", ability: str = "use") -> ActionResult:
 
 
 def test_机制经验可跨存档但存档事实不行(store):
-    store.add_experience("浇水会让耕地变湿", status="verified", scope="mechanism")
-    store.add_experience("农场东南角有箱子", scope="save", scope_save=SAVE_A, status="verified")
+    store.add_experience(
+        "浇水会让耕地变湿", status="verified", scope="mechanism", evidence_ids=["ev:water-1"]
+    )
+    store.add_experience(
+        "农场东南角有箱子",
+        scope="save",
+        scope_save=SAVE_A,
+        status="verified",
+        evidence_ids=["ev:chest-1"],
+    )
     in_a = {row["claim"] for row in store.recall("农场 箱子", save_key=SAVE_A)}
     in_b = {row["claim"] for row in store.recall("农场 箱子", save_key=SAVE_B)}
     assert "农场东南角有箱子" in in_a
@@ -61,8 +69,36 @@ def test_支持证据与反例分别计数(store):
     assert stored["premises"] == [{"path": "location", "op": "==", "value": "Farm"}]
 
 
+def test_节流拦截不会让已验证技能降级(store):
+    from stardew_agent.cli.wiring import make_event_sink
+
+    record = store.add_skill(_definition(), status="verified")
+    sink = make_event_sink(store)
+    sink(
+        Event(
+            id="ev:blocked",
+            kind="repeat_blocked",
+            recorded_at=1.0,
+            save_key=SAVE_A,
+            ability=record.id,
+            status="blocked",
+            payload={"reason": "8 秒内重复"},
+        )
+    )
+    assert store.skill(record.id)["status"] == "verified"
+    assert store.skill_runs(record.id) == []
+
+
+def test_验证经验必须带证据不能只靠文字(store):
+    with pytest.raises(ExperienceError):
+        store.add_experience("模型说浇水会变湿", status="verified", confidence="model")
+    record = store.add_experience("浇水会让耕地变湿", status="verified", evidence_ids=["ev:water-1"])
+    assert record.status == "verified"
+    assert store.evidence_counts(record.id)["support"] == 1
+
+
 def test_经验可以修订或撤销并保留历史(store):
-    record = store.add_experience("下雨天不用浇水", status="verified")
+    record = store.add_experience("下雨天不用浇水", status="verified", evidence_ids=["ev:rain-1"])
     store.set_experience_status(record.id, "retired", note="雨不覆盖温室")
     stored = store.experience(record.id)
     assert stored["status"] == "retired"

@@ -232,6 +232,9 @@ class ExperienceStore:
         now = self.clock()
         if scope == "save" and not scope_save:
             raise ExperienceError("存档经验必须提供 scope_save，避免跨存档混用")
+        if status == "verified" and not evidence_ids and not counterexample_ids:
+            # 模型总结、相似度、自信都不能把一条没有证据的文字升级成“已验证”。
+            raise ExperienceError("verified 经验必须附证据 event_id；不接受只靠文字或 confidence 升级")
         record = ExperienceRecord(
             id="exp:" + uuid.uuid4().hex,
             claim=str(claim),

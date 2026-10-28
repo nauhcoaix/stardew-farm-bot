@@ -81,7 +81,7 @@ class SelectDelegation(DelegationBase):
             return self.finish("unknown", "接口已下发，但快照没有提供当前槽位", selected_slot=None)
         self.steps += 1
         try:
-            await self.port.select(self.slot)
+            await self.port.select(self.slot, action_id=self.action_id)
         except AgentError as exc:
             if getattr(exc, "code", "") in STALE_CODES:
                 return self.finish("failed", "选择物品被拒绝：%s" % exc, error=exc.code)
@@ -125,9 +125,9 @@ class EntityActionDelegation(DelegationBase):
         self.steps += 1
         try:
             if self.ability == "use":
-                self.response = await self.port.use(self.ref)
+                self.response = await self.port.use(self.ref, action_id=self.action_id)
             else:
-                self.response = await self.port.interact(self.ref)
+                self.response = await self.port.interact(self.ref, action_id=self.action_id)
         except AgentError as exc:
             if getattr(exc, "code", "") in STALE_CODES:
                 return self.finish("failed", "动作被拒绝：%s" % exc, error=exc.code)
@@ -203,7 +203,7 @@ class MenuDelegation(DelegationBase):
             return self.finish("unknown", "接口已下发，但菜单看起来没有变化", menu_after=menu_now.get("text"))
         self.steps += 1
         try:
-            await self.port.menu(self.ref)
+            await self.port.menu(self.ref, action_id=self.action_id)
         except AgentError as exc:
             if getattr(exc, "code", "") in STALE_CODES:
                 return self.finish("failed", "菜单操作被拒绝：%s" % exc, error=exc.code)

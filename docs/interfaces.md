@@ -119,6 +119,8 @@
     `set_experience_status(id, status, note="")`、`experience(id)`、
     `evidence_counts(id)`、`recall(query, *, save_key, limit, include_candidates,
     include_retired)`、`list_experiences(...)`。
+    写成 `status="verified"` 时必须给 `evidence_ids`（或反例），否则抛 `ExperienceError`：
+    模型文字与 `confidence` 不能把无证据的主张升级成已验证。
   - 技能：`add_skill(definition, *, ability_versions, status)`、`record_skill_run(...)`、
     `promote_skill(id, *, required_successes=3)`、`retire_skill(id, reason, version=None)`、
     `active_skills()`、`skill(id, version=None)`、`list_skills()`。
@@ -168,6 +170,8 @@
   recent_history_limit=8, idle_log_seconds, clock).run(max_actions=None) -> LoopSummary`。
   `request_decision(observation, last_result, recent_actions)` 在委托结算后调用；
   `recent_actions` 由 `_remember` 维护（最新在前），包含 failed/unknown/blocked。
+  存档（`save_key`）变化时清空 `recent_actions` 与 `last_result`，并记录 `context_switched`：
+  A 存档的动作历史不会进入 B 存档的决策上下文。
 
 ## cli
 
