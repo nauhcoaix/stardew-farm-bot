@@ -61,8 +61,9 @@ TOOL_LABELS = {
 
 #: ``auto`` 只挑照料类任务：砍树/清障/挖矿是不可逆的资源决策，必须显式指定
 AUTO_ORDER = ("water", "till", "harvest", "refill")
-DEFAULT_TARGETS = 8
-DEFAULT_SECONDS = 45
+#: 默认一批做多少个目标：批量越大，模型请求越少（token 消耗主要来自请求次数）
+DEFAULT_TARGETS = 16
+DEFAULT_SECONDS = 90
 
 #: 石头/矿石对象的名称线索（桥的 name 是显示名，objName 是内部名）
 MINE_HINTS = ("stone", "node", "ore", "geode", "quartz", "石", "矿", "晶")
@@ -555,8 +556,8 @@ def farm_routine_ability(registry: Any, *, clock: Callable[[], float] = time.mon
         params={
             "task": "water/till/harvest/plant/refill/chop/clear/mine/auto"
             "（默认 auto：只做浇水、锄地、收获、装水；砍树/清理/挖矿必须显式指定）",
-            "max_targets": "本次最多处理几个目标（1～40，默认 8）",
-            "max_seconds": "本次最长秒数（5～120，默认 45）",
+            "max_targets": "本次最多处理几个目标（1～40，默认 16；批量越大模型请求越少）",
+            "max_seconds": "本次最长秒数（5～120，默认 90）",
             "seed": "task=plant 时必填：背包里种子的名称或物品 id（模糊匹配）",
         },
         observation_needs=("entities", "inventory", "player.position", "player.selectedSlot", "player.energy", "menu"),

@@ -58,7 +58,18 @@ class FakeDelegation:
 
 
 class Harness:
-    def __init__(self, decisions, *, requests=None, guard=None, observes=None, progresses=None, use_model_completion=False):
+    def __init__(
+        self,
+        decisions,
+        *,
+        requests=None,
+        guard=None,
+        observes=None,
+        progresses=None,
+        use_model_completion=False,
+        auto_continue=None,
+        max_auto_continue=2,
+    ):
         self.observations = observe(x=10, y=10)
         self._pending = list(decisions)
         self.delegations: list[FakeDelegation] = []
@@ -84,6 +95,8 @@ class Harness:
             poll_seconds=0.001,
             step_interval_seconds=0.001,
             use_model_completion=use_model_completion,
+            auto_continue=auto_continue,
+            max_auto_continue=max_auto_continue,
             idle_log_seconds=0.0,
         )
 
@@ -438,4 +451,36 @@ def test_模型判据不能把失败升级为完成():
     summary = asyncio.run(harness.run(max_actions=1))
     assert summary.failed == 1
     assert summary.completed == 0
+
+
+def test_例行程序剩余目标会自动续跑而不请求模型():
+    progresses = [
+        Progress("unknown", "达到上限，仍有 3 个", {"done": [{"tile": {"x": 1, "y": 1}}], "remaining": 3}),
+        Progress("unknown", "达到上限，仍有 1 个", {"done": [{"tile": {"x": 2, "y": 1}}], "remaining": 1}),
+        Progress("completed", "本次目标已全部完成", {"done": [{"tile": {"x": 3, "y": 1}}], "remaining": 0}),
+    ]
+
+    async def decide(harness, observation, last_result, recent_results=()):
+        return make_decision(observation, ability="farm_routine", params={"task": "till"})
+
+    def continuation(result):
+        if result.ability != "farm_routine":
+            return None
+        if not (result.evidence or {}).get("remaining"):
+            return None
+        return AbilityCall("farm_routine", dict(result.params))
+
+    harness = Harness(
+        [decide],
+        requests=3,
+        progresses=progresses,
+        auto_continue=continuation,
+        max_auto_continue=2,
+    )
+    summary = asyncio.run(harness.run(max_actions=3))
+
+    assert summary.decisions == 1
+    assert summary.actions == 3
+    kinds = [event.kind for event in harness.recorder.events]
+    assert kinds.count("action_continued") == 2
 

@@ -27,7 +27,7 @@ from ..abilities import (
     use_ability,
 )
 from ..bridge_client import Bridge
-from ..contracts.decision import Decision
+from ..contracts.decision import AbilityCall, Decision
 from ..contracts.errors import ModelError, TransportError
 from ..contracts.experience import Event
 from ..contracts.observation import Observation
@@ -70,6 +70,20 @@ def result_from_payload(payload: Mapping[str, Any]) -> ActionResult:
         "error",
     }
     return ActionResult(**{key: payload[key] for key in allowed if key in payload})
+
+
+def routine_continuation(result: ActionResult) -> AbilityCall | None:
+    """例行程序还有剩余目标时本地续跑：省掉一次模型请求，参数与目标都不变。"""
+    if result.ability != "farm_routine" or result.state not in ("unknown", "completed"):
+        return None
+    evidence = result.evidence or {}
+    remaining = evidence.get("remaining")
+    if not isinstance(remaining, int) or remaining <= 0:
+        return None
+    params = dict(result.params or {})
+    if params.get("task") == "plant":
+        return None  # 种子有限，续跑容易空转
+    return AbilityCall(ability="farm_routine", params=params)
 
 
 class MailboxFishingPort:
@@ -357,6 +371,7 @@ async def build_runtime(
         poll_seconds=config.poll_seconds,
         step_interval_seconds=config.step_interval_seconds,
         use_model_completion=config.model_completion_enabled,
+        auto_continue=routine_continuation,
         action_key=default_action_key,
     )
     return Runtime(

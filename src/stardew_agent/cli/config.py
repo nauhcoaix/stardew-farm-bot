@@ -69,7 +69,7 @@ class AgentConfig:
     stop_path: Path = Path("data/stop.json")
     embedding_dir: Path | None = None
     max_context_entities: int = 120
-    max_notable_entities: int = 40
+    max_notable_entities: int = 24
 
     def __post_init__(self) -> None:
         if self.budget_seconds <= 0:
@@ -201,7 +201,7 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path | None = None
         stop_path=path_of("stop_path") or Path("data/stop.json"),
         embedding_dir=path_of("embedding_dir"),
         max_context_entities=int(data.get("max_context_entities") or 120),
-        max_notable_entities=_require_int(data, "max_notable_entities", 40),
+        max_notable_entities=_require_int(data, "max_notable_entities", 24),
     )
 
 

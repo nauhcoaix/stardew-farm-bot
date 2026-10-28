@@ -74,6 +74,17 @@ def format_event(event: Event) -> list[str]:
             lines.append(prefix + "判据被忽略：" + _clip("；".join(str(row) for row in ignored), 160))
         return lines
 
+    if kind == "action_continued":
+        params = _params_text(payload.get("params"))
+        streak = payload.get("streak")
+        return [
+            prefix
+            + "自动续跑："
+            + (event.ability or "?")
+            + ((" " + params) if params else "")
+            + ("（第 %s 次）" % streak if streak else "")
+        ]
+
     if kind == "action_started":
         params = _params_text(payload.get("params"))
         line = prefix + "开始执行：" + (event.ability or "?") + ((" " + params) if params else "")

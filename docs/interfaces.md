@@ -95,7 +95,9 @@
   （含 `provided_knowledge` 与截断说明）。默认压缩：`observation.tiles` 是通行网格，
   `observation.entity_counts` 是农活数量，`observation.entities` 只列非地块实体
   （`ContextLimits.compact_entities=False` 可回到旧的全量视图）；
-  上限由 `max_notable_entities` 控制。`recent_actions` 是最近 8 条动作摘要
+  上限由 `max_notable_entities`（默认 24）控制；能力目录只保留 `id/summary/params/scope`，
+  `last_result` 只保留状态与关键证据（`compact_abilities` / `compact_results` 可关闭）。
+  `recent_actions` 是最近 6 条动作摘要
   （最新在前，含状态/原因/多少秒前，`blocked` 也在内），`recent_failures` 是其中失败/未知/拦截的前 3 条。
 - `build_messages(context, *, include_completion=False)`、`build_system_prompt(*, include_completion=False)`、
   `SYSTEM_PROMPT`。默认提示词不含 `completion` 字段：完成只由能力的前后观察验证；
@@ -167,11 +169,15 @@
   打印失败会自我停用，不影响运行。
 - `AgentLoop(*, observe, request_decision, build_delegation, budget, ownership, recorder,
   guard, premises, action_key, context_key, stop, poll_seconds, step_interval_seconds,
-  recent_history_limit=8, idle_log_seconds, clock).run(max_actions=None) -> LoopSummary`。
+  recent_history_limit=8, idle_log_seconds, auto_continue=None, max_auto_continue=2,
+  clock).run(max_actions=None) -> LoopSummary`。
   `request_decision(observation, last_result, recent_actions)` 在委托结算后调用；
   `recent_actions` 由 `_remember` 维护（最新在前），包含 failed/unknown/blocked。
   存档（`save_key`）变化时清空 `recent_actions` 与 `last_result`，并记录 `context_switched`：
   A 存档的动作历史不会进入 B 存档的决策上下文。
+  `auto_continue(result)` 返回同一逻辑调用的 `AbilityCall` 时，循环直接续跑（最多
+  `max_auto_continue` 次，跳过限频、记录 `action_continued`），用于 `farm_routine`
+  还有剩余目标的情况；`cli/wiring.routine_continuation` 是默认策略。
 
 ## cli
 

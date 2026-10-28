@@ -62,6 +62,7 @@ cli.run_agent
 | 写操作超时是结果未知 | `bridge_client`（`ResultUnknown`）、能力把未知如实返回 |
 | 完成判据只能否决成功 | `runtime/loop.py` 的 `_finish`（模型判据默认关闭，见 `model_completion_enabled`） |
 | 机械动作不经模型 | `AbilitySpec.exposed=False`（`use`/`select_item`）+ `validate_model_params` 拒绝；由 `farm_routine` 内部调用 |
+| 剩余目标本地续跑 | `loop._continuation_decision`：`routine_continuation` 命中时不再请求模型，最多 `max_auto_continue` 次 |
 | 收获不挥工具 | `farm_routine` 的 `harvest` 走 `interact`（桥的 `use` 只挥当前工具/种子） |
 | 上下文按预算压缩 | `decision/context.py`：地块→通行网格，实体只留非默认字段，候选去重 |
 | 限频不把“有进展的续跑”算成新动作 | 只有新委托下发时 `RepeatGuard.record` |

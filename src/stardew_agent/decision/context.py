@@ -55,11 +55,15 @@ class ContextLimits:
     max_inventory: int = 40
     max_experiences: int = 8
     max_menu_options: int = 12
-    max_recent_actions: int = 8
+    max_recent_actions: int = 6
     #: 地块压成网格 + 实体只留非默认字段（关掉可回到旧的全量行为，便于对比）
     compact_entities: bool = True
     #: 压缩模式下最多列出多少个非地块实体
-    max_notable_entities: int = 40
+    max_notable_entities: int = 24
+    #: 能力目录只给 id/summary/params/scope（版本、观察需求、上限由代码保证）
+    compact_abilities: bool = True
+    #: ``last_result`` 只留状态与关键证据，不带完整差分
+    compact_results: bool = True
 
 
 def _distance(origin: Mapping[str, Any], entity: Mapping[str, Any]) -> int:
@@ -182,6 +186,39 @@ def _recent_rows(rows: Iterable[Mapping[str, Any]], limit: int, now: float) -> l
     return out
 
 
+_RESULT_FIELDS = ("ability", "params", "state", "detail", "progress", "error")
+_EVIDENCE_FIELDS = (
+    "task",
+    "done",
+    "failed",
+    "remaining",
+    "verified",
+    "steps",
+    "completion_predicate",
+    "completion_predicate_error",
+    "error",
+)
+
+
+def _compact_abilities(abilities: Sequence[AbilityDescriptor]) -> list[dict]:
+    """模型只需要知道“有哪些能力、参数怎么填、作用范围”；版本/观察需求/上限由代码保证。"""
+    return [
+        {"id": descriptor.id, "summary": descriptor.summary, "params": dict(descriptor.params), "scope": descriptor.scope}
+        for descriptor in abilities
+    ]
+
+
+def _compact_result(result: Mapping[str, Any]) -> dict:
+    """``last_result`` 只留状态与关键证据，避免每轮重发完整差分。"""
+    row = {key: result.get(key) for key in _RESULT_FIELDS if result.get(key) is not None}
+    evidence = result.get("evidence")
+    if isinstance(evidence, Mapping):
+        kept = {key: evidence.get(key) for key in _EVIDENCE_FIELDS if evidence.get(key) is not None}
+        if kept:
+            row["evidence"] = kept
+    return row
+
+
 def _compact_candidates(candidates: Mapping[str, Any]) -> dict:
     """候选只留“去哪/点谁”必需的信息：完整实体与前沿明细不重复塞。"""
     items = []
@@ -260,25 +297,22 @@ def build_context(
         "goal_revision": goal_revision,
         "observation": observe_view,
         "trimmed": {"entities": entity_trim},
-        "abilities": [descriptor.to_dict() for descriptor in abilities],
+        "abilities": _compact_abilities(abilities)
+        if limits.compact_abilities
+        else [descriptor.to_dict() for descriptor in abilities],
         "candidates": _compact_candidates(candidates or {}),
         "experiences": experiences,
         "recent_actions": recent,
         "recent_failures": failures,
-        "last_result": dict(last_result) if last_result else None,
+        "last_result": _compact_result(last_result)
+        if (last_result and limits.compact_results)
+        else (dict(last_result) if last_result else None),
         "budget": dict(budget or {}),
         "provided_knowledge": [
-            "能力目录：能力 id、参数、观察需求、真实前提、完成判据",
-            "observation.tiles：按行字符串表示的可通行网格，origin 是左上角坐标；"
-            ". 可通行 / # 阻挡 / ? 未知 / 空格 未观察",
-            "observation.entity_counts：现场可锄地/需浇水/可收获/可装水的数量"
-            "（实体列表只列非地块实体，避免重复）",
-            "观察字段含义：可通行/可耕/需浇水等是游戏桥提供的结构化属性",
-            "ref 的时效：ref 只在单次快照内有效；坐标与 target_id 跨快照稳定",
-            "recent_actions：最近几次动作的真实状态（成功/失败/未知/拦截）与原因；"
-            "state=blocked 表示执行器没下发，原样重发只会再次被拦",
-            "判据 path 只能引用现场观察根字段；引用 last_result/recent_actions 会被忽略",
-            "长期目标文字（用户可修改）",
+            "observation.tiles：可通行网格（origin 为左上角；. 可通行 / # 阻挡 / ? 未知 / 空格 未观察）；"
+            "entity_counts 是可锄/需浇/可收/可装水的数量",
+            "ref 只在单次快照内有效；坐标与 target_id 跨快照稳定；判据 path 只能引用观察根字段",
+            "recent_actions 的 state=blocked 表示执行器没下发，原样重发会被再次拦",
         ],
     }
     return context

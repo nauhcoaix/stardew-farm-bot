@@ -47,6 +47,13 @@ def test_不行动时说明原因():
     assert "选择动作" not in out
 
 
+def test_自动续跑会提示():
+    out = text(make("action_continued", ability="farm_routine", payload={"params": {"task": "till"}, "streak": 1}))
+    assert "自动续跑" in out
+    assert "farm_routine" in out
+    assert "第 1 次" in out
+
+
 def test_被忽略的判据会打印原因():
     out = text(
         make(

@@ -222,7 +222,7 @@ def test_上下文实体上限配置():
     assert config.max_notable_entities == 24
     assert config.public()["max_notable_entities"] == 24
     default = config_from_mapping(dict(REQUIRED))
-    assert default.max_notable_entities == 40
+    assert default.max_notable_entities == 24
 
     for bad in (0, 200):
         with pytest.raises(ConfigError):

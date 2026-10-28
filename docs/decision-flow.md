@@ -130,8 +130,9 @@ flowchart LR
    - `provided_knowledge`：项目主动提供的信息（能力目录、网格与计数含义、ref 时效、
      `blocked` 的含义、长期目标文字）。
 
-实测（真实农场快照 290 个实体、半径 8）：压缩前约 31.7k 字符（≈8.9k–11k tokens），
-压缩后约 16.4k 字符（≈4.9k–6.1k tokens）；把 `max_notable_entities` 调到 24 约 14.1k 字符。
+实测（真实农场快照 290 个实体、半径 8）：压缩前约 30.7k 字符（≈8.6k–10.6k tokens），
+压缩后约 13.1k 字符（≈4.0k–5.0k tokens）；能力目录只保留 `id/summary/params/scope`，
+`last_result` 只保留状态与关键证据（不带完整差分）。
 `ContextLimits(compact_entities=False)` 可回到旧行为做对比。
 
 不给的东西：每日日程、作物优先级、固定路线、攻略解法、隐藏全局信息、全局地图。
@@ -265,13 +266,19 @@ flowchart LR
 
 补水只改变水壶的 `water` 字段（数量和物品 id 都不变），所以 `inventory_delta`
 同时比较 `water/waterCapacity/tool`；否则补水会被误判成 `unknown`。
-| `max_targets` | 1～40，默认 8；达到上限时状态为 `unknown` 并报告剩余数量 |
-| `max_seconds` | 5～120，默认 45；体力为 0、场景变化、步数用尽都会提前如实结束 |
+| `max_targets` | 1～40，默认 16；达到上限时状态为 `unknown` 并报告剩余数量 |
+| `max_seconds` | 5～120，默认 90；体力为 0、场景变化、步数用尽都会提前如实结束 |
 
 被拦截的决策（限频、前提不满足、解析层拒绝：隐藏能力/参数非法）会以 `state=blocked`
 写进 `recent_actions`，并附上原因，所以模型下一轮就看得到“刚才那一下根本没下发”，
 不会原样重发。模型连续输出 `ability=null` 时，循环按 `poll_seconds × 2^(n-1)`
-（上限 5 秒）退避，避免“没活干”时继续按 2 秒一次烧请求。
+（上限 15 秒）退避，避免“没活干”时继续按 2 秒一次烧请求。
+
+**自动续跑（省请求）**：`farm_routine` 结束时若证据里有 `remaining > 0`（达到
+`max_targets`/`max_seconds`/步数上限），`loop` 直接用同一参数再下发一次，最多
+`max_auto_continue=2` 次，不请求模型；记录 `action_continued`。续跑跳过限频检查
+（它不是新的逻辑动作），仍受预算、停止信号与所有权约束。`task=plant` 不自动续跑
+（种子有限，容易空转）。模型给出新决策后计数清零。
 
 进度变化只写 `action_step`；控制台对重复说明去重，避免刷屏。
 

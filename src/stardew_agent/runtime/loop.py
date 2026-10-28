@@ -36,12 +36,18 @@ DecisionRequester = Callable[
 ]
 DelegationFactory = Callable[[AbilityCall, Observation], Delegation]
 PremiseSupplier = Callable[[AbilityCall, Observation], Sequence[Mapping[str, Any]]]
+#: 结果 → 是否自动续跑（返回同一逻辑调用的参数）；``None`` 表示交给模型决定
+ContinuationPolicy = Callable[[ActionResult], AbilityCall | None]
 KeyFunction = Callable[[Any], str]
 
 
 def default_action_key(call: AbilityCall) -> str:
     """动作键：能力 + 规范化参数；不同地块/目标因此是不同动作。"""
     return "%s:%s" % (call.ability, json.dumps(dict(call.params), sort_keys=True, ensure_ascii=False))
+
+
+#: 模型连续说“没有可做的事”时的最长退避（秒）：没有新信息时不要按秒烧请求
+IDLE_BACKOFF_MAX_SECONDS = 15.0
 
 
 def default_context_key(observation: Observation) -> str:
@@ -111,6 +117,8 @@ class AgentLoop:
         step_interval_seconds: float = 0.2,
         recent_history_limit: int = 8,
         use_model_completion: bool = False,
+        auto_continue: ContinuationPolicy | None = None,
+        max_auto_continue: int = 2,
         idle_log_seconds: float = 10.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -128,6 +136,9 @@ class AgentLoop:
         self.poll_seconds = float(poll_seconds)
         self.step_interval_seconds = float(step_interval_seconds)
         self.use_model_completion = bool(use_model_completion)
+        self.auto_continue = auto_continue
+        self.max_auto_continue = max(0, int(max_auto_continue))
+        self._continue_streak = 0
         self.idle_log_seconds = float(idle_log_seconds)
         self.clock = clock
 
@@ -172,6 +183,11 @@ class AgentLoop:
                     continue
                 self._note_context(observation)
                 if self._active is None and self._decision_task is None:
+                    continuation = self._continuation_decision(observation)
+                    if continuation is not None:
+                        # 同一例行程序还有剩余目标：本地续跑，不额外请求模型（省 token）。
+                        await self._dispatch(continuation, observation, skip_guard=True)
+                        continue
                     # 委托结算后才发起下一次决策：模型看到的 last_result 与最近历史是最新的。
                     # 推理期间游戏继续运行（不暂停），只是不提前请求下一步。
                     self._decision_based_on = observation
@@ -254,6 +270,29 @@ class AgentLoop:
         if self.guard is not None:
             self.guard.reset()
             self._record("guard_reset", payload={"context": key})
+
+    def _continuation_decision(self, observation: Observation) -> Decision | None:
+        """同一逻辑委托还有剩余目标时直接续跑，不消耗模型请求。"""
+        if self.auto_continue is None or self._last_result is None:
+            return None
+        if self._continue_streak >= self.max_auto_continue:
+            return None
+        call = self.auto_continue(self._last_result)
+        if call is None:
+            return None
+        self._continue_streak += 1
+        self._record(
+            "action_continued",
+            ability=call.ability,
+            payload={"params": dict(call.params), "streak": self._continue_streak},
+        )
+        return Decision(
+            goal=self._active_goal or "继续处理剩余目标",
+            based_on_sampled_at=observation.sampled_at,
+            based_on_snapshot_id=observation.snapshot_id,
+            reason="自动续跑：同一例行程序仍有剩余目标",
+            call=call,
+        )
 
     async def _ask(self, observation: Observation) -> Decision | None:
         started = self.clock()
@@ -376,7 +415,7 @@ class AgentLoop:
             return None
         return await self._dispatch(decision, observation)
 
-    async def _dispatch(self, decision: Decision, observation: Observation) -> str | None:
+    async def _dispatch(self, decision: Decision, observation: Observation, *, skip_guard: bool = False) -> str | None:
         """校验新鲜度与限频后启动委托；返回非空表示应当结束运行。"""
         call = decision.call
         premises = self.premises(call, observation) if (call is not None and self.premises) else ()
@@ -396,7 +435,7 @@ class AgentLoop:
             return None
         if call is None:
             self._no_action_streak += 1
-            backoff = min(2 ** (self._no_action_streak - 1) * self.poll_seconds, 5.0)
+            backoff = min(2 ** (self._no_action_streak - 1) * self.poll_seconds, IDLE_BACKOFF_MAX_SECONDS)
             self._record(
                 "no_action",
                 payload={
@@ -422,7 +461,7 @@ class AgentLoop:
             )
 
         key = self.action_key(call)
-        if self.guard is not None:
+        if self.guard is not None and not skip_guard:
             verdict: GuardDecision = self.guard.check(key, ability=call.ability)
             if not verdict.allowed:
                 self.summary.blocked += 1
@@ -473,7 +512,7 @@ class AgentLoop:
             self._record("ownership_busy", ability=call.ability, status="blocked", payload={"detail": str(exc)})
             return None
 
-        if self.guard is not None:
+        if self.guard is not None and not skip_guard:
             self.guard.record(key, ability=call.ability)
         self._active = delegation
         self._lease = lease
@@ -484,6 +523,9 @@ class AgentLoop:
         self._pending_completion = decision.completion if self.use_model_completion else None
         completion_ignored = bool(decision.completion) and not self.use_model_completion
         self._no_action_streak = 0
+        if not skip_guard:
+            # 模型给出新决策时重新计数“自动续跑”；续跑本身不重置。
+            self._continue_streak = 0
         self.summary.actions += 1
         self._record(
             "action_started",

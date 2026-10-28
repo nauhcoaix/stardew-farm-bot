@@ -574,6 +574,14 @@ def test_委托把稳定动作id传给端口():
     assert action_port.kwargs[-1]["action_id"] == "a-use"
 
 
+def test_农活默认批量更大以减少请求次数():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    params = spec.validate({})
+    assert params["max_targets"] == 16
+    assert params["max_seconds"] == 90.0
+
+
 def test_农活委托取消后不再下发写操作():
     registry, _move, action_port = _routine_registry()
     spec = registry.get("farm_routine")

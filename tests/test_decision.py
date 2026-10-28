@@ -243,6 +243,40 @@ def test_最近动作按上限截断():
     assert [row["ability"] for row in context["recent_actions"]] == ["a0", "a1"]
 
 
+def test_能力目录与上次结果会被压缩():
+    from stardew_agent.contracts.ability import AbilityDescriptor
+
+    descriptor = AbilityDescriptor(
+        id="demo",
+        version="9.9.9",
+        summary="示例",
+        params={"a": "说明"},
+        observation_needs=("entities",),
+        scope="只做示例",
+        completion="前后观察变化",
+        limits=("max_steps<=1",),
+    )
+    context = build_context(
+        observation=observe(),
+        abilities=[descriptor],
+        last_result={
+            "ability": "use",
+            "state": "completed",
+            "params": {"target": "@s1:e1"},
+            "evidence": {
+                "tile_delta": {"before": ["x" * 200], "after": ["y" * 200]},
+                "done": [{"tile": {"x": 1, "y": 1}}],
+                "remaining": 3,
+            },
+        },
+    )
+    assert set(context["abilities"][0]) == {"id", "summary", "params", "scope"}
+    result = context["last_result"]
+    assert "tile_delta" not in result["evidence"]
+    assert result["evidence"]["remaining"] == 3
+    assert result["evidence"]["done"]
+
+
 def test_非法可选判据被忽略而不是丢弃动作():
     observation = observe()
     decision = parse_decision(
