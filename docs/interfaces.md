@@ -128,11 +128,16 @@
 
 ## abilities
 
-- `AbilityRegistry(specs=())`：`register/get/known/descriptors/validate_params/
-  check_premises/predicates/start`。`start` 统一校验参数与前提。
+- `AbilityRegistry(specs=())`：`register/get/known/descriptors/all_descriptors/
+  model_visible/validate_params/validate_model_params/check_premises/predicates/start`。
+  `start` 统一校验参数与前提；`descriptors` 只返回 `exposed=True` 的能力，
+  `validate_model_params` 拒绝模型下发隐藏能力（机械动作）。
 - 能力工厂：`move_ability(port)`、`select_item_ability(port)`、`use_ability(port)`、
   `interact_ability(port)`、`menu_ability(port)`、`fish_ability(port, *,
-  validate_limits)`、`composite_ability(definition, registry)`。
+  validate_limits)`、`farm_routine_ability(registry)`、`composite_ability(definition, registry)`。
+- `farm_routine_ability`：任务与上限
+  `{task: auto|water|till|harvest|plant|refill, max_targets, max_seconds, seed}`；
+  内部调用 `select_item`/`move_to`/`use`，因此这些底层动作默认 `exposed=False`。
 - `PremiseCheck(kind, met, detail)`，`kind ∈ {game, user, budget, advice}`；
   只有 `game/user/budget` 明确为假时才阻止下发。
 

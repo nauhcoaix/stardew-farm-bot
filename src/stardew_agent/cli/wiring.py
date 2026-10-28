@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
@@ -18,6 +18,7 @@ from ..abilities import (
     ActionPort,
     FishingPort,
     composite_ability,
+    farm_routine_ability,
     fish_ability,
     interact_ability,
     menu_ability,
@@ -88,16 +89,30 @@ class MailboxFishingPort:
 
 
 def build_registry(
-    action_port: ActionPort | None, fishing_port: FishingPort | None = None, *, store: ExperienceStore | None = None
+    action_port: ActionPort | None,
+    fishing_port: FishingPort | None = None,
+    *,
+    store: ExperienceStore | None = None,
+    expose_mechanics: bool = False,
 ) -> AbilityRegistry:
-    """注册基础能力；有持久化的已验证技能时再把它们作为能力注册。"""
+    """注册基础能力；有持久化的已验证技能时再把它们作为能力注册。
+
+    ``select_item`` / ``use`` 是底层机械动作，默认只给本地例行程序（``farm_routine``）
+    使用，不进模型能力目录；``expose_mechanics=True`` 仅用于调试或回归对比。
+    """
     registry = AbilityRegistry()
+
+    def mechanic(spec: Any) -> Any:
+        return spec if expose_mechanics else replace(spec, exposed=False)
+
     if action_port is not None:
         registry.register(move_ability(action_port))  # type: ignore[arg-type]
-        registry.register(select_item_ability(action_port))
-        registry.register(use_ability(action_port))
+        registry.register(mechanic(select_item_ability(action_port)))
+        registry.register(mechanic(use_ability(action_port)))
         registry.register(interact_ability(action_port))
         registry.register(menu_ability(action_port))
+        # 例行程序要调用上面的底层能力，所以放在它们之后注册。
+        registry.register(farm_routine_ability(registry))
     if fishing_port is not None:
         registry.register(fish_ability(fishing_port))
     if store is not None:
@@ -207,7 +222,10 @@ def make_decider(
         if not reply.parsed:
             raise ModelError("模型回复没有可解析的 JSON 对象")
         decision = parse_decision(
-            reply.parsed, observation=observation, validate_params=registry.validate_params, model=reply.model
+            reply.parsed,
+            observation=observation,
+            validate_params=registry.validate_model_params,
+            model=reply.model,
         )
         state["goal"] = decision.goal
         state["goal_revision"] = decision.goal_revision
@@ -294,7 +312,9 @@ async def build_runtime(
         include_fishing = is_installed(config.game_path)
     port = fishing_port if fishing_port is not None else (MailboxFishingPort(config.fishing_mailbox) if include_fishing else None)
 
-    registry = build_registry(bridge, port, store=store)
+    registry = build_registry(
+        bridge, port, store=store, expose_mechanics=config.expose_mechanics
+    )
     budget = RunBudget(
         wall_clock_seconds=config.budget_seconds,
         model_requests=config.budget_requests,
@@ -390,6 +410,11 @@ async def run_agent(
             "config": config.public(),
             "store": runtime.store.summary(),
             "abilities": [descriptor.id for descriptor in runtime.registry.descriptors()],
+            "hidden_abilities": [
+                descriptor.id
+                for descriptor in runtime.registry.all_descriptors()
+                if not runtime.registry.model_visible(descriptor.id)
+            ],
         }
     finally:
         await runtime.close()

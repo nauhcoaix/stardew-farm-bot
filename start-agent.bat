@@ -166,6 +166,7 @@ echo   start-agent.bat run --quiet     (no live console output)
 echo   start-agent.bat run --repeat-exempt select_item   (rate-limit allowlist)
 echo   start-agent.bat run --model-interval 2            (min seconds between model requests)
 echo   start-agent.bat run --model-completion            (use model completion predicates)
+echo   start-agent.bat run --expose-mechanics            (debug: expose use/select_item to model)
 echo   start-agent.bat stats --days 7                    (ratios of the last 7 days)
 echo   start-agent.bat doctor --no-probe
 echo   start-agent.bat skills list

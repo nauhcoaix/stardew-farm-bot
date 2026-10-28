@@ -126,7 +126,10 @@ def format_event(event: Event) -> list[str]:
             + "观察失败：%s（%s）" % (payload.get("error") or "未知错误", _clip(payload.get("detail") or "", 100))
         ]
     if kind == "decision_failed":
-        return [prefix + "模型请求/解析失败：" + _clip(payload.get("code") or payload.get("error") or "", 80)]
+        code = str(payload.get("code") or payload.get("error") or "")
+        detail = _clip(payload.get("detail") or "", MAX_DETAIL)
+        text = code + ("：" + detail if detail else "")
+        return [prefix + "模型请求/解析失败：" + _clip(text, 160)]
     if kind == "ownership_busy":
         return [prefix + "动作所有权被占用：" + _clip(payload.get("detail") or "", MAX_DETAIL)]
     if kind == "cancel_failed":

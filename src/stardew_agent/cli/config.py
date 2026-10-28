@@ -24,6 +24,7 @@ KNOWN_KEYS = REQUIRED_KEYS + (
     "repeat_exempt_abilities",
     "model_request_interval_seconds",
     "model_completion_enabled",
+    "expose_mechanics",
     "bridge_endpoint",
     "snapshot_radius",
     "game_path",
@@ -51,6 +52,7 @@ class AgentConfig:
     repeat_max_runs: int
     model_request_interval_seconds: float = 0.0
     model_completion_enabled: bool = False
+    expose_mechanics: bool = False
     repeat_exempt_abilities: tuple[str, ...] = ()
     bridge_endpoint: str = "ws://127.0.0.1:17654/"
     snapshot_radius: int = 8
@@ -102,6 +104,7 @@ class AgentConfig:
             "repeat_max_runs": self.repeat_max_runs,
             "model_request_interval_seconds": self.model_request_interval_seconds,
             "model_completion_enabled": self.model_completion_enabled,
+            "expose_mechanics": self.expose_mechanics,
             "repeat_exempt_abilities": list(self.repeat_exempt_abilities),
             "bridge_endpoint": self.bridge_endpoint,
             "snapshot_radius": self.snapshot_radius,
@@ -145,6 +148,13 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path | None = None
             raise ConfigError("model_completion_enabled 必须是 true 或 false")
         model_completion = value
 
+    expose_mechanics = False
+    if "expose_mechanics" in data:
+        value = data["expose_mechanics"]
+        if not isinstance(value, bool):
+            raise ConfigError("expose_mechanics 必须是 true 或 false")
+        expose_mechanics = value
+
     exempt_raw = data.get("repeat_exempt_abilities", ())
     if isinstance(exempt_raw, str) or not isinstance(exempt_raw, (list, tuple)):
         raise ConfigError("repeat_exempt_abilities 必须是字符串数组，例如 [\"select_item\"]")
@@ -159,6 +169,7 @@ def config_from_mapping(data: Mapping[str, Any], *, base_dir: Path | None = None
         repeat_max_runs=int(data["repeat_max_runs"]),
         model_request_interval_seconds=float(data.get("model_request_interval_seconds") or 0.0),
         model_completion_enabled=model_completion,
+        expose_mechanics=expose_mechanics,
         repeat_exempt_abilities=exempt,
         bridge_endpoint=str(data.get("bridge_endpoint") or "ws://127.0.0.1:17654/"),
         snapshot_radius=int(data.get("snapshot_radius") or 8),

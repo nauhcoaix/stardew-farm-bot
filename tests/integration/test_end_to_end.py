@@ -31,7 +31,17 @@ class FakeBridge:
 
     def _entities(self) -> list[dict]:
         return [
-            entity("@snap:e1", "soil", "耕地", 12, 10, tilled=self.tilled, watered=self.watered),
+            entity(
+                "@snap:e1",
+                "tile",
+                "可耕地",
+                12,
+                10,
+                tilled=self.tilled,
+                watered=self.watered,
+                diggable=not self.tilled,
+                needsWater=False,
+            ),
             entity("@snap:e2", "exit", "出口 → FarmHouse", 9, 10),
         ]
 
@@ -46,7 +56,12 @@ class FakeBridge:
 
     async def move(self, x=None, y=None, near=None, **kwargs):
         self.calls.append(("move", x, y, near))
-        if near is None and x is not None and y is not None:
+        if near is not None:
+            for row in self._entities():
+                if row.get("ref") == near:
+                    self.x, self.y = int(row["tile"]["x"]), int(row["tile"]["y"])
+                    break
+        elif x is not None and y is not None:
             self.x, self.y = int(x), int(y)
         return {"changed": True, "detail": "已移动"}
 
@@ -87,7 +102,7 @@ def model_with(decisions: list[dict]) -> ChatClient:
     return ChatClient(ModelSettings(api_key="sk-test", api_base="http://example.invalid/chat"), transport=transport)
 
 
-def config_for(tmp_path: Path) -> AgentConfig:
+def config_for(tmp_path: Path, *, expose_mechanics: bool = False) -> AgentConfig:
     return AgentConfig(
         budget_seconds=15,
         budget_requests=3,
@@ -98,6 +113,7 @@ def config_for(tmp_path: Path) -> AgentConfig:
         stop_path=tmp_path / "stop.json",
         poll_seconds=0.05,
         step_interval_seconds=0.05,
+        expose_mechanics=expose_mechanics,
     )
 
 
@@ -128,12 +144,40 @@ def test_移动委托在真实循环里完成并留下证据(tmp_path: Path):
         store.close()
 
 
-def test_使用能力按前后观察验证并把证据写入经验库(tmp_path: Path):
+def test_农活例行程序在真实循环里锄地并写入经验库(tmp_path: Path):
+    bridge = FakeBridge()
+    model = model_with(
+        [{"goal": "锄这块地", "ability": "farm_routine", "params": {"task": "till", "max_targets": 2}}]
+    )
+    payload = asyncio.run(
+        run_agent(config_for(tmp_path), bridge=bridge, model=model, include_fishing=False, max_actions=1)
+    )
+    assert payload["summary"]["completed"] == 1
+    assert ("use", "@snap:e1") in bridge.calls
+
+    store = ExperienceStore(tmp_path / "experience.sqlite3")
+    try:
+        events = store.events_for_save(SAVE_KEY, kind="action")
+        result = events[0]["payload"]["result"]
+        assert result["ability"] == "farm_routine"
+        assert result["evidence"]["task"] == "till"
+        assert result["evidence"]["done"] == [{"tile": {"x": 12, "y": 10}, "task": "till"}]
+    finally:
+        store.close()
+
+
+def test_调试开关仍可直接使用底层动作(tmp_path: Path):
     bridge = FakeBridge()
     bridge.x = 12
     model = model_with([{"goal": "锄这块地", "ability": "use", "params": {"target": "@snap:e1", "expect": "till"}}])
     payload = asyncio.run(
-        run_agent(config_for(tmp_path), bridge=bridge, model=model, include_fishing=False, max_actions=1)
+        run_agent(
+            config_for(tmp_path, expose_mechanics=True),
+            bridge=bridge,
+            model=model,
+            include_fishing=False,
+            max_actions=1,
+        )
     )
     assert payload["summary"]["completed"] == 1
     assert ("use", "@snap:e1") in bridge.calls

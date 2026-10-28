@@ -90,6 +90,18 @@ def drop_item_ability(port, *, clock=time.monotonic):
 3. 在 `tests/` 增加：参数非法、前提不满足、成功、无变化（unknown）、取消；
 4. 更新 `docs/interfaces.md` 与 `docs/migration.md`。
 
+### 要不要让模型直接调用？
+
+默认 `AbilitySpec.exposed=True`，会出现在模型能力目录里。以下情况应设 `exposed=False`：
+
+- 它是机械、重复、逐格的底层动作（`use`、`select_item`），模型只需要给高层任务；
+- 它只该由 `farm_routine` 或组合技能在内部调用；
+- 暴露它会让模型绕过前提检查或产生大量没有决策价值的请求。
+
+隐藏后用 `AbilityRegistry.all_descriptors()` 仍能查到它，`registry.start()` 仍可启动；
+`registry.validate_model_params()` 会拒绝模型下发（错误信息里会列出当前可见能力）。
+需要临时对比旧行为时用 `expose_mechanics=true` 或 `run --expose-mechanics`，不要写进默认配置。
+
 不要在 `runtime/loop.py` 里加业务分支；主循环只处理统一生命周期。
 
 ## 修改接口的流程

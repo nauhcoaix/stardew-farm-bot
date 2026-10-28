@@ -4,6 +4,7 @@
 * :mod:`registry` — 静态注册与统一入口
 * :mod:`navigation` — ``move_to``
 * :mod:`interaction` — ``select_item`` / ``use`` / ``interact`` / ``choose_menu_option``
+* :mod:`routines` — ``farm_routine``（浇水/锄地/收获/播种/装水的本地批量执行）
 * :mod:`fishing` — ``fish``（委托独立钓鱼 Mod）
 * :mod:`composite` — 组合技能执行
 * :mod:`verification` — 前后观察差分证据
@@ -24,6 +25,7 @@ from .interaction import (
 )
 from .navigation import MoveDelegation, MovePort, move_ability
 from .registry import AbilityRegistry
+from .routines import FarmRoutineDelegation, farm_routine_ability
 from .verification import inventory_delta, position_delta, scene_changed, tile_delta
 
 __all__ = [
@@ -33,6 +35,7 @@ __all__ = [
     "CompositeDelegation",
     "DelegationBase",
     "EntityActionDelegation",
+    "FarmRoutineDelegation",
     "FishingDelegation",
     "FishingPort",
     "MenuDelegation",
@@ -42,6 +45,7 @@ __all__ = [
     "SelectDelegation",
     "blocking_premises",
     "composite_ability",
+    "farm_routine_ability",
     "fish_ability",
     "interact_ability",
     "inventory_delta",

@@ -10,7 +10,7 @@ import pytest
 
 from stardew_agent.cli.config import AgentConfig, config_from_mapping, load_config
 from stardew_agent.cli.main import main
-from stardew_agent.contracts.errors import ConfigError
+from stardew_agent.contracts.errors import ConfigError, Rejected
 from stardew_agent.contracts.experience import Event
 from stardew_agent.contracts.results import ActionResult
 from stardew_agent.experience import ExperienceStore
@@ -203,6 +203,36 @@ def test_命令行可开启模型完成判据(tmp_path: Path):
     config_file.write_text(json.dumps(REQUIRED), encoding="utf-8")
     config = load_config(config_file, overrides={"model_completion_enabled": True})
     assert config.model_completion_enabled is True
+
+
+def test_机械动作开关默认关闭():
+    config = config_from_mapping(dict(REQUIRED))
+    assert config.expose_mechanics is False
+    assert config.public()["expose_mechanics"] is False
+
+    enabled = config_from_mapping(dict(REQUIRED, expose_mechanics=True))
+    assert enabled.expose_mechanics is True
+
+    with pytest.raises(ConfigError):
+        config_from_mapping(dict(REQUIRED, expose_mechanics="yes"))
+
+
+def test_机械动作默认不暴露给模型():
+    class Port:
+        pass
+
+    from stardew_agent.cli.wiring import build_registry
+
+    registry = build_registry(Port(), None)
+    visible = [descriptor.id for descriptor in registry.descriptors()]
+    assert "farm_routine" in visible
+    assert "use" not in visible and "select_item" not in visible
+    assert {"use", "select_item"} <= {descriptor.id for descriptor in registry.all_descriptors()}
+    with pytest.raises(Rejected):
+        registry.validate_model_params("use", {"target": "@s1:e1"})
+
+    debug = build_registry(Port(), None, expose_mechanics=True)
+    assert "use" in [descriptor.id for descriptor in debug.descriptors()]
 
 
 def test_stats命令输出占比(tmp_path: Path, capsys):

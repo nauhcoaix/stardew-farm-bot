@@ -51,6 +51,11 @@ def _add_budget(parser: argparse.ArgumentParser) -> None:
         help="采用模型提出的 completion 判据（默认不使用，仅由能力验证成败）",
     )
     parser.add_argument(
+        "--expose-mechanics",
+        action="store_true",
+        help="把 use/select_item 等底层机械动作也暴露给模型（默认只给 farm_routine 用）",
+    )
+    parser.add_argument(
         "--repeat-exempt",
         help="限频白名单：逗号分隔的能力 id（例如 select_item），这些能力不参与限频",
     )
@@ -127,6 +132,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "repeat_max_runs": getattr(args, "repeat_max", None),
         "model_request_interval_seconds": getattr(args, "model_interval", None),
         "model_completion_enabled": True if getattr(args, "model_completion", False) else None,
+        "expose_mechanics": True if getattr(args, "expose_mechanics", False) else None,
         "repeat_exempt_abilities": _split_exempt(getattr(args, "repeat_exempt", None)),
         "long_term_goal": getattr(args, "goal", None),
         "snapshot_radius": getattr(args, "radius", None),

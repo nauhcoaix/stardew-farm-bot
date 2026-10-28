@@ -134,7 +134,8 @@ flowchart LR
 4. `budget.record_tokens`（`runtime/budget.py:82`）：拿不到 tokens 时标记未知；
 5. `decision/parse.py:parse_decision`（27）：
    - `goal` 必填；`ability` 为空表示“暂不行动”，必须写 `note`；
-   - `params` 必须是对象，并立即通过 `AbilityRegistry.validate_params`（`abilities/registry.py:47`）→ 能力的 `validate`；
+   - `params` 必须是对象，并立即通过 `AbilityRegistry.validate_model_params`
+     （`abilities/registry.py:60`）→ 隐藏能力（`use`/`select_item`）在这里被拒绝，能力的 `validate` 再查参数；
    - `completion` / `stop_conditions` 必须通过受限判据校验（`decision/predicates.py:validate`，42）：
      只允许观察字段路径 + `== != < <= > >= in not_in exists absent` + JSON 字面量；
      `completion` 默认可省略（见第 9 节），`stop_conditions` 仅供参考、不参与结算；
@@ -221,12 +222,30 @@ flowchart LR
 | 能力 | 位置 | 一步做什么 | 怎么验证 |
 |---|---|---|---|
 | `move_to` | `abilities/navigation.py:78` | 下发一次桥移动（坐标或 near） | 重新观察位置，到达目标格或四邻格；位置没变即失败 |
+| `farm_routine` | `abilities/routines.py` | 从现场挑一个目标，内部依次起 `select_item`/`move_to`/`use` 子委托 | 每个目标沿用 `use` 的 `expect` 前后观察判定；预算/步数/体力不足时如实报告部分完成 |
 | `select_item` | `abilities/interaction.py:72` | 一次 `select` | 快照 `player.selectedSlot` 是否变化 |
 | `use` | `abilities/interaction.py:119/137` | 一次 `use`，**第二次进入只核对** | `expect` 对应字段前后差分（`observation/diff.py:target_progress`）；无证据报 `unknown` |
 | `interact` | 同上 | 一次 `interact` | 同地块状态变化或新菜单 |
 | `choose_menu_option` | `abilities/interaction.py:189` | 一次 `menu` | 菜单关闭或内容变化，否则 `unknown` |
 | `fish` | `abilities/fishing.py:60` | 启动/轮询独立钓鱼 Mod 的 runId | Mod 报告 `completed` 才算成功；任务被替换即失败 |
 | 组合技能 | `abilities/composite.py:48` | 按步骤调用已注册能力 | 每步完成判据 + 技能总完成判据 |
+
+`select_item` 与 `use` 默认 `exposed=False`：只作为 `farm_routine` 的内部步骤存在，
+模型能力目录里看不到，`AbilityRegistry.validate_model_params` 会拒绝模型直接下发。
+`expose_mechanics=true` 只用于调试对比。
+
+`farm_routine` 的任务与边界：
+
+| 参数/任务 | 含义 |
+|---|---|
+| `task=water` | 处理 `needsWater=true` 的地块；自动切到水壶，水壶没水时前提直接失败并提示 `refill` |
+| `task=till` | 处理 `diggable=true` 的普通地块；自动切到锄头 |
+| `task=harvest` | 处理 `harvestable=true` 的地块 |
+| `task=plant` | 处理已耕且无作物的地块；必须给 `seed`（名称或物品 id 模糊匹配） |
+| `task=refill` | 处理 `refillable=true` 的水源格；自动切到水壶 |
+| `task=auto` | 按 浇水 → 锄地 → 收获 → 装水 的顺序选第一个有目标的任务 |
+| `max_targets` | 1～40，默认 8；达到上限时状态为 `unknown` 并报告剩余数量 |
+| `max_seconds` | 5～120，默认 45；体力为 0、场景变化、步数用尽都会提前如实结束 |
 
 进度变化只写 `action_step`；控制台对重复说明去重，避免刷屏。
 

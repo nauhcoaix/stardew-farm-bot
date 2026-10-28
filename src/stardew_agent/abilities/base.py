@@ -56,6 +56,9 @@ class AbilitySpec:
     check_premises: PremiseChecker
     start: Starter
     predicates: Callable[[Mapping[str, Any]], Sequence[Mapping[str, Any]]] = lambda params: ()
+    #: 是否出现在给模型的能力目录里。``False`` 表示这是底层机械动作，
+    #: 只由本地例行程序（如 ``farm_routine``）调用，不接受模型直接下发。
+    exposed: bool = True
 
     @property
     def id(self) -> str:

@@ -61,6 +61,7 @@ cli.run_agent
 | 临时 ref 不跨快照直接执行 | `decision/binding.py`：执行前按决策时的观察改绑为坐标或当前 ref |
 | 写操作超时是结果未知 | `bridge_client`（`ResultUnknown`）、能力把未知如实返回 |
 | 完成判据只能否决成功 | `runtime/loop.py` 的 `_finish`（模型判据默认关闭，见 `model_completion_enabled`） |
+| 机械动作不经模型 | `AbilitySpec.exposed=False`（`use`/`select_item`）+ `validate_model_params` 拒绝；由 `farm_routine` 内部调用 |
 | 限频不把“有进展的续跑”算成新动作 | 只有新委托下发时 `RepeatGuard.record` |
 | 经验状态不会被相似度或模型自信提升 | `experience/store.py`（显式状态变更 + 晋级判据） |
 | 存档事实不跨存档 | 所有索引表带 `save_key`；`scope='save'` 的经验必须带存档 |

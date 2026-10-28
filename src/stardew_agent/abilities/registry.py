@@ -42,7 +42,34 @@ class AbilityRegistry:
         return spec
 
     def descriptors(self) -> list[AbilityDescriptor]:
+        """给模型看的能力目录：只包含 ``exposed=True`` 的能力。"""
+        return [
+            self._specs[key].descriptor
+            for key in sorted(self._specs)
+            if self._specs[key].exposed
+        ]
+
+    def all_descriptors(self) -> list[AbilityDescriptor]:
+        """包含隐藏能力的完整目录，用于诊断与本地执行器。"""
         return [self._specs[key].descriptor for key in sorted(self._specs)]
+
+    def model_visible(self, ability_id: str) -> bool:
+        spec = self._specs.get(ability_id)
+        return bool(spec is not None and spec.exposed)
+
+    def validate_model_params(self, ability_id: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
+        """模型决策专用：隐藏能力直接拒绝，避免绕过例行程序逐格下指令。"""
+        spec = self._specs.get(ability_id)
+        if spec is None:
+            visible = sorted(key for key, row in self._specs.items() if row.exposed)
+            raise Rejected("未知能力 %s（模型可直接调用：%s）" % (ability_id, ", ".join(visible) or "无"))
+        if not spec.exposed:
+            visible = sorted(key for key, row in self._specs.items() if row.exposed)
+            raise Rejected(
+                "能力 %s 是底层机械动作，不直接对模型开放；请用高层能力（%s）"
+                % (ability_id, ", ".join(visible) or "无")
+            )
+        return spec.validate(params)
 
     def validate_params(self, ability_id: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
         """供决策解析使用：能力不存在或参数非法时抛 ``Rejected``。"""
@@ -64,4 +91,7 @@ class AbilityRegistry:
         return spec.start(params, observation, action_id)
 
     def snapshot(self) -> dict:
-        return {"abilities": [descriptor.to_dict() for descriptor in self.descriptors()]}
+        return {
+            "abilities": [descriptor.to_dict() for descriptor in self.all_descriptors()],
+            "model_visible": sorted(key for key, spec in self._specs.items() if spec.exposed),
+        }

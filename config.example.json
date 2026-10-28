@@ -3,6 +3,7 @@
   "budget_requests": 40,
   "model_request_interval_seconds": 0,
   "model_completion_enabled": false,
+  "expose_mechanics": false,
   "repeat_window_seconds": 8,
   "repeat_max_runs": 5,
   "repeat_exempt_abilities": ["select_item"],

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
 from stardew_agent.abilities import (
     AbilityRegistry,
     composite_ability,
+    farm_routine_ability,
     fish_ability,
     interact_ability,
     menu_ability,
@@ -20,7 +22,7 @@ from stardew_agent.contracts.decision import AbilityCall
 from stardew_agent.contracts.errors import PremiseFailed, Rejected
 from stardew_agent.experience import build_skill
 from stardew_agent.observation import target_id
-from tests.helpers import entity, menu_row, observe
+from tests.helpers import entity, inventory, menu_row, observe
 
 
 class FakeMovePort:
@@ -275,4 +277,102 @@ def test_组合技能按步骤执行并核对完成判据():
     final = run_step(delegation, arrived)
     assert final.state == "completed"
     assert final.evidence["verified"] is True
+
+
+def _routine_registry(*, expose_mechanics: bool = False):
+    """装一套最小注册表：底层动作 + farm_routine。"""
+    move_port = FakeMovePort()
+    action_port = FakeActionPort()
+    registry = AbilityRegistry()
+    registry.register(move_ability(move_port))
+    select = select_item_ability(action_port)
+    use = use_ability(action_port)
+    if not expose_mechanics:
+        select = replace(select, exposed=False)
+        use = replace(use, exposed=False)
+    registry.register(select)
+    registry.register(use)
+    registry.register(farm_routine_ability(registry))
+    return registry, move_port, action_port
+
+
+def test_机械动作默认不对模型开放():
+    registry, _move, _action = _routine_registry()
+    assert [descriptor.id for descriptor in registry.descriptors()] == ["farm_routine", "move_to"]
+    assert [descriptor.id for descriptor in registry.all_descriptors()] == [
+        "farm_routine",
+        "move_to",
+        "select_item",
+        "use",
+    ]
+    with pytest.raises(Rejected) as info:
+        registry.validate_model_params("use", {"target": "@s1:e1"})
+    assert "farm_routine" in str(info.value)
+    assert registry.validate_model_params("farm_routine", {"task": "water"})["task"] == "water"
+
+    debug, _m, _a = _routine_registry(expose_mechanics=True)
+    assert "use" in [descriptor.id for descriptor in debug.descriptors()]
+
+
+def test_农活例行程序自己选工具并逐块浇水():
+    registry, _move_port, action_port = _routine_registry()
+    spec = registry.get("farm_routine")
+    soil_a = entity("@s1:e1", "soil", "耕地", 11, 10, tilled=True, watered=False, needsWater=True)
+    soil_b = entity("@s1:e2", "soil", "耕地", 12, 10, tilled=True, watered=False, needsWater=True)
+    can = inventory(2, "浇水壶", tool="WateringCan", water=40, waterCapacity=40, category=-99)
+    params = spec.validate({"task": "water", "max_targets": 4})
+    before = observe(entities=[soil_a, soil_b], inventory_rows=[can], selected_slot=0)
+    delegation = spec.start(params, before, "a20")
+
+    done_a = dict(soil_a, watered=True, needsWater=False)
+    both = observe(entities=[soil_a, soil_b], inventory_rows=[can], selected_slot=2)
+    observations = [
+        before,  # 选工具
+        both,  # 下发 select
+        both,  # 校验 select → 开始走向 A
+        observe(x=11, entities=[soil_a, soil_b], inventory_rows=[can], selected_slot=2),  # 到达 A
+        observe(x=11, entities=[soil_a, soil_b], inventory_rows=[can], selected_slot=2),  # 下发 use(A)
+        observe(x=11, entities=[done_a, soil_b], inventory_rows=[can], selected_slot=2),  # 校验 A，转向 B
+        observe(x=12, entities=[done_a, soil_b], inventory_rows=[can], selected_slot=2),  # 到达 B
+        observe(x=12, entities=[done_a, soil_b], inventory_rows=[can], selected_slot=2),  # 下发 use(B)
+        observe(
+            x=12,
+            entities=[done_a, dict(soil_b, watered=True, needsWater=False)],
+            inventory_rows=[can],
+            selected_slot=2,
+        ),  # 校验 B
+    ]
+    progress = None
+    for row in observations:
+        progress = asyncio.run(delegation.step(row))
+        if progress.done:
+            break
+
+    assert progress is not None and progress.state == "completed"
+    assert [call for call in action_port.calls if call[0] == "select"] == [("select", 2)]
+    assert [call for call in action_port.calls if call[0] == "use"] == [("use", "@s1:e1"), ("use", "@s1:e2")]
+    assert progress.evidence["done"] == [
+        {"tile": {"x": 11, "y": 10}, "task": "water"},
+        {"tile": {"x": 12, "y": 10}, "task": "water"},
+    ]
+
+
+def test_农活前提在没有目标或缺工具时明确失败():
+    registry, _move, _action = _routine_registry()
+    spec = registry.get("farm_routine")
+    params = spec.validate({"task": "water"})
+
+    no_crops = observe(entities=[entity("@s1:e2", "tile", "地块", 10, 11)], inventory_rows=[inventory(2, "浇水壶", tool="WateringCan")])
+    checks = spec.check_premises(params, no_crops)
+    assert any(check.met is False and "没有可浇水" in check.detail for check in checks)
+
+    soil = entity("@s1:e3", "soil", "耕地", 10, 12, tilled=True, needsWater=True, watered=False)
+    dry = observe(entities=[soil], inventory_rows=[inventory(2, "浇水壶", tool="WateringCan", water=0)])
+    checks = spec.check_premises(params, dry)
+    assert any(check.met is False and "没水" in check.detail for check in checks)
+
+    no_tool = observe(entities=[soil], inventory_rows=[inventory(0, "锄头", tool="Hoe")])
+    checks = spec.check_premises(params, no_tool)
+    assert any(check.met is False and "没有水壶" in check.detail for check in checks)
+
 
