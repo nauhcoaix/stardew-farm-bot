@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>0.1.4</Version>
+    <Version>0.1.5</Version>
     <GamePath Condition="'$(GamePath)' == ''">$(STARDEW_GAME_PATH)</GamePath>
   </PropertyGroup>
   <ItemGroup>

@@ -59,6 +59,17 @@
 - 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
   `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-pathfix`）。
 
+## 本轮修改（2026-10-28，版本 0.1.5）
+
+- 修“出口在墙格上时反而卡住”：上一版先判断出口格能不能站，站不进去就退化成“站旁边按交互”，
+  交互失败直接返回失败，人一直停在门口。
+  - 现在出口**一律朝传送格踩过去**（游戏靠撞到传送格/门切图，不要求格子可站立）；
+  - 离出口格心 40px 且只剩最后一步时就算“到门口”，持续朝门口压，0.6 秒后补按一次交互；
+  - 等 2 秒仍不切图时区分原因：角色/动物站在出口、门需要钥匙/对话、或目标格不是门。
+- 等角色让路的判定也包含农场牲畜。
+- 构建与部署：`dotnet build -c Release` 通过，DLL 已复制到
+  `Mods/AgentStardew/AgentStardew.dll`（旧 DLL 备份为 `.bak-before-warpexit`）。
+
 ## 构建
 
 ```powershell

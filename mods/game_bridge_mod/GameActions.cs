@@ -65,6 +65,8 @@ public static class GameActions
         private const double ExitWaitSeconds = 2.0;
         private const float WaypointTolerance = 6f;
         private const float ExitTolerance = 3f;
+        //: 出口常贴在不可站立的墙格上：离格心这么近就当作“到门口”，保持向前压。
+        private const float ExitReach = 40f;
         private bool nearGoal;
         private Point goal;
         private Queue<Point> path;
@@ -84,8 +86,9 @@ public static class GameActions
             //: 出口 = 传送点或门；普通对象/地块只走到旁边。
             exitGoal = target?.Identity is Warp || Pathfinder.IsWarp(location, tile);
             exitTileWalkable = Observations.Walkable(location, tile);
-            //: 能踩上去就直接踩到格心；交互型门先站到相邻格，再按一次交互。
-            nearGoal = exitGoal ? !exitTileWalkable : target != null;
+            //: 出口一律朝传送格踩过去（门格可能不可站立，但撞上去就会切图）；
+            //: 普通对象/地块才“走到旁边”。
+            nearGoal = !exitGoal && target != null;
             goal = tile;
             path = BuildPath();
             simulator = reflection.GetField<IInputSimulator?>(typeof(Game1), "inputSimulator");
@@ -136,6 +139,8 @@ public static class GameActions
         {
             foreach (var npc in location.characters)
                 if (npc.TilePoint == tile) return true;
+            foreach (var animal in location.animals.Values)
+                if (animal.TilePoint == tile) return true;
             return false;
         }
 
@@ -154,6 +159,11 @@ public static class GameActions
             return exitActionError == null;
         }
 
+        private static int DirectionToward(Vector2 delta) =>
+            Math.Abs(delta.X) > Math.Abs(delta.Y)
+                ? delta.X > 0 ? 1 : 3
+                : delta.Y > 0 ? 2 : 0;
+
         public object? Tick()
         {
             input.Direction = -1;
@@ -166,7 +176,7 @@ public static class GameActions
                 if (current != goal)
                 {
                     goal = current;
-                    nearGoal = exitGoal ? !exitTileWalkable : true;
+                    nearGoal = !exitGoal;
                     if (!TryReplan()) throw new ActionFault("PATH_BLOCKED", "目标移动后 A* 找不到新路径。");
                 }
             }
@@ -189,31 +199,30 @@ public static class GameActions
             }
 
             var center = Game1.player.GetBoundingBox().Center.ToVector2();
+            var targetCenter = goal.ToVector2() * 64 + new Vector2(32);
             var tolerance = exitGoal ? ExitTolerance : WaypointTolerance;
             while (path.Count > 0 && Vector2.Distance(center, path.Peek().ToVector2() * 64 + new Vector2(32)) <= tolerance)
                 path.Dequeue();
 
+            //: 出口格可能不可站立：离格心一个身位内、且只剩最后一步，就当作“到门口”。
+            if (exitGoal && path.Count <= 1 && Vector2.Distance(center, targetCenter) <= ExitReach)
+                path.Clear();
+
             if (path.Count == 0)
             {
                 if (!exitGoal) return observations.Result("已到达目标（A* 重算 " + replans + " 次）。", moved);
-                //: 到门口不等于完成：等游戏真正切图，避免停在门边反复报“已到达”。
-                if (exitSince == DateTime.MinValue)
-                {
-                    exitSince = now;
-                    if (!exitTileWalkable && !TryOpenExit())
-                        return observations.Result(
-                            exitActionError != null
-                                ? $"已到门口，但无法打开：{exitActionError}。请重新观察。"
-                                : "已到门口，但门没有可用交互。请重新观察。",
-                            moved);
-                }
-                //: 能踩的出口格也可能需要按键：站稳后补一次交互。
-                if (!exitActionTried && (now - exitSince).TotalSeconds > 0.8) TryOpenExit();
+                //: 到门口不等于完成：保持朝门口压，等游戏真正切图。
+                if (exitSince == DateTime.MinValue) exitSince = now;
+                if (Vector2.Distance(center, targetCenter) > 2f)
+                    input.Direction = DirectionToward(targetCenter - center);
+                if (!exitActionTried && (now - exitSince).TotalSeconds > 0.6) TryOpenExit();
                 if ((now - exitSince).TotalSeconds > ExitWaitSeconds)
                     return observations.Result(
-                        exitActionError != null && !exitTileWalkable
-                            ? $"在门口等了 {ExitWaitSeconds:0.0} 秒仍未切换场景（{exitActionError}）；请重新观察后再决定。"
-                            : $"在门口等了 {ExitWaitSeconds:0.0} 秒仍未切换场景；门可能没开、需要钥匙或需要先对话。请重新观察。",
+                        BlockedByCharacter(goal)
+                            ? $"有角色/动物站在出口格 ({goal.X},{goal.Y}) 上，等了 {ExitWaitSeconds:0.0} 秒还没让开；请重新观察后再决定。"
+                            : exitActionError != null && !exitTileWalkable
+                                ? $"在门口等了 {ExitWaitSeconds:0.0} 秒仍未切换场景（{exitActionError}）；请重新观察后再决定。"
+                                : $"在门口等了 {ExitWaitSeconds:0.0} 秒仍未切换场景；门可能没开、需要钥匙或需要先对话。请重新观察。",
                         moved);
                 return null;
             }
@@ -249,9 +258,7 @@ public static class GameActions
             }
 
             var delta = next.ToVector2() * 64 + new Vector2(32) - center;
-            input.Direction = Math.Abs(delta.X) > Math.Abs(delta.Y)
-                ? delta.X > 0 ? 1 : 3
-                : delta.Y > 0 ? 2 : 0;
+            input.Direction = DirectionToward(delta);
             return null;
         }
 
